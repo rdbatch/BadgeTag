@@ -192,6 +192,13 @@ describe('profile API handlers', () => {
     expect(config.userPoolId).toBeTruthy()
   })
 
+  it('serves empty RUM identifiers so RUM never initializes in mock mode', async () => {
+    const res = await handleMockRequest(request('/config.json'))
+    const config = await res?.json()
+    expect(config.rumAppMonitorId).toBe('')
+    expect(config.rumIdentityPoolId).toBe('')
+  })
+
   it('rejects authenticated routes without the mock token', async () => {
     const me = await handleMockRequest(request('/api/profile/me'))
     expect(me?.status).toBe(401)

@@ -2,7 +2,6 @@ use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse
 use aws_lambda_events::encodings::Body;
 use aws_lambda_events::http::HeaderMap;
 use lambda_runtime::{Error, LambdaEvent, service_fn};
-use tracing_subscriber::EnvFilter;
 
 async fn handler(
     _event: LambdaEvent<ApiGatewayV2httpRequest>,
@@ -23,10 +22,7 @@ async fn handler(
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .json()
-        .init();
+    badgetag_backend::init_tracing();
 
     lambda_runtime::run(service_fn(handler)).await
 }

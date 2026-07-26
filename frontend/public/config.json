@@ -2,5 +2,7 @@
   "region": "",
   "userPoolId": "",
   "userPoolClientId": "",
-  "apiBase": ""
+  "apiBase": "",
+  "rumAppMonitorId": "",
+  "rumIdentityPoolId": ""
 }

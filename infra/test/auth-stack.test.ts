@@ -215,10 +215,10 @@ describe("AuthStack", () => {
     });
   });
 
-  describe("SES Alerts SNS Topic", () => {
-    test("creates an SNS topic for SES reputation alerts", () => {
+  describe("Shared Alerts SNS Topic", () => {
+    test("creates a shared SNS topic for operational alerts across every stack", () => {
       template.hasResourceProperties("AWS::SNS::Topic", {
-        TopicName: "badgetag-ses-alerts-test",
+        TopicName: "badgetag-alerts-test",
       });
     });
 
@@ -230,7 +230,14 @@ describe("AuthStack", () => {
     });
 
     test("has alerts topic ARN output with no CloudFormation export", () => {
-      template.hasOutput("SesAlertsTopicArn", { Export: Match.absent() });
+      template.hasOutput("AlertsTopicArn", { Export: Match.absent() });
+    });
+
+    test("publishes the alerts topic ARN to SSM for other stacks to import", () => {
+      template.hasResourceProperties("AWS::SSM::Parameter", {
+        Name: "/badgetag/test/auth/alerts-topic-arn",
+        Type: "String",
+      });
     });
   });
 });

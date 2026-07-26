@@ -13,7 +13,6 @@
 
 use lambda_runtime::{Error, LambdaEvent, service_fn};
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::EnvFilter;
 
 use badgetag_backend::store::ProfileStore;
 
@@ -65,10 +64,7 @@ async fn handler(store: &ProfileStore, event: LambdaEvent<Event>) -> Result<Resp
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .json()
-        .init();
+    badgetag_backend::init_tracing();
 
     let config = aws_config::load_from_env().await;
     let dynamo_client = aws_sdk_dynamodb::Client::new(&config);

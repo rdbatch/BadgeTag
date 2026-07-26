@@ -6,6 +6,7 @@ import { AuthStack } from "../lib/auth-stack";
 import { DataStack } from "../lib/data-stack";
 import { FrontendStack } from "../lib/frontend-stack";
 import { MonitoringStack } from "../lib/monitoring-stack";
+import { RumStack } from "../lib/rum-stack";
 import { WafStack } from "../lib/waf-stack";
 
 const app = new cdk.App();
@@ -53,6 +54,19 @@ if (!domainNames?.[0]) {
   );
 }
 
+// Shared by AuthStack (SES/RUM/API alarm notifications) and MonitoringStack
+// (the cost budget alert) — one address, one place required-ness is enforced.
+const alertEmail = (() => {
+  const email = app.node.tryGetContext("alertEmail") as string | undefined;
+  if (!email) {
+    throw new Error(
+      'CDK context "alertEmail" is required. Pass it via: --context alertEmail=<address>\n' +
+        "Example: npx cdk deploy --context alertEmail=ops@example.com",
+    );
+  }
+  return email;
+})();
+
 const dataStack = new DataStack(app, `BadgeTag-Data-${environment}`, {
   tags: commonTags,
   env: stackEnv,
@@ -69,16 +83,7 @@ const authStack = new AuthStack(app, `BadgeTag-Auth-${environment}`, {
     (app.node.tryGetContext("sesDomainName") as string | undefined) ??
     (environment === "prod" ? "badgetag.me" : `${environment}.badgetag.me`),
   passkeyRelyingPartyId: domainNames[0],
-  alertEmail: (() => {
-    const email = app.node.tryGetContext("alertEmail") as string | undefined;
-    if (!email) {
-      throw new Error(
-        'CDK context "alertEmail" is required. Pass it via: --context alertEmail=<address>\n' +
-          "Example: npx cdk deploy --context alertEmail=ops@example.com",
-      );
-    }
-    return email;
-  })(),
+  alertEmail,
 });
 
 const apiStack = new ApiStack(app, `BadgeTag-Api-${environment}`, {
@@ -103,6 +108,23 @@ const apiStack = new ApiStack(app, `BadgeTag-Api-${environment}`, {
 // before ApiStack tries to read them.
 apiStack.addDependency(dataStack);
 apiStack.addDependency(authStack);
+
+const rumStack = new RumStack(app, `BadgeTag-Rum-${environment}`, {
+  tags: commonTags,
+  env: stackEnv,
+  environment,
+  domainNames,
+  // Portion of user sessions to sample, 0 to 1. Override via
+  // `--context rumSampleRate=0.1` to reduce RUM billing at higher traffic.
+  sessionSampleRate: (() => {
+    const raw = app.node.tryGetContext("rumSampleRate") as string | undefined;
+    return raw ? Number(raw) : undefined;
+  })(),
+});
+// RumStack's JS-error alarm publishes to AuthStack's shared alerts topic,
+// resolved via SSM (see rum-stack.ts) — dependency kept for SSM parameter
+// deploy ordering only.
+rumStack.addDependency(authStack);
 
 // CLOUDFRONT-scope WAF Web ACLs can only be created via the us-east-1 API
 // endpoint, regardless of the app's `--context region` — pinned here
@@ -144,10 +166,18 @@ const monitoringStack = new MonitoringStack(app, `BadgeTag-Monitoring-${environm
   tags: commonTags,
   env: stackEnv,
   environment,
+  alertEmail,
+  // Monthly AWS cost threshold for the budget alarm. Override via
+  // `--context monthlyBudgetUsd=50`.
+  monthlyBudgetUsd: (() => {
+    const raw = app.node.tryGetContext("monthlyBudgetUsd") as string | undefined;
+    return raw ? Number(raw) : undefined;
+  })(),
 });
-// MonitoringStack's dashboard combines metrics from ApiStack, DataStack, and
-// FrontendStack, all resolved via SSM (see MonitoringStack's doc comment) —
-// dependencies kept for SSM parameter deploy ordering only.
+// MonitoringStack's dashboard combines metrics from ApiStack, DataStack,
+// FrontendStack, and RumStack, all resolved via SSM (see MonitoringStack's
+// doc comment) — dependencies kept for SSM parameter deploy ordering only.
+monitoringStack.addDependency(rumStack);
 monitoringStack.addDependency(apiStack);
 monitoringStack.addDependency(dataStack);
 monitoringStack.addDependency(frontendStack);

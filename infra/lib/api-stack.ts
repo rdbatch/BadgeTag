@@ -5,7 +5,9 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
@@ -119,6 +121,11 @@ export class ApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       logGroup: apiFnLogGroup,
+      // API Gateway HTTP APIs (v2) don't support X-Ray at the gateway layer
+      // (only REST APIs do), so the trace begins here at the Lambda rather
+      // than at the edge — client<->server correlation instead relies on
+      // the x-request-id response header (see api.rs).
+      tracing: lambda.Tracing.ACTIVE,
       environment: {
         TABLE_NAME: table.tableName,
         BUCKET_NAME: imageBucket.bucketName,
@@ -345,6 +352,15 @@ export class ApiStack extends cdk.Stack {
     // identifiers it needs (function name, log group, API id) via the SSM
     // params published at the bottom of this constructor.
 
+    // Shared alerts topic (AuthStack owns it, alongside its own SES
+    // alarms) — every alarm below routes through it so there's one inbox
+    // and one subscription to confirm per environment.
+    const alertsTopicArn = ssm.StringParameter.valueForStringParameter(
+      this,
+      authParamPaths.alertsTopicArn,
+    );
+    const alertsTopic = sns.Topic.fromTopicArn(this, "AlertsTopic", alertsTopicArn);
+
     const lambdaErrors = apiFn.metric("Errors", {
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
@@ -376,7 +392,7 @@ export class ApiStack extends cdk.Stack {
       threshold: 5,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-    });
+    }).addAlarmAction(new cw_actions.SnsAction(alertsTopic));
 
     new cloudwatch.Alarm(this, "LambdaDurationAlarm", {
       alarmName: `badgetag-api-${environment}-lambda-p99-duration`,
@@ -385,7 +401,7 @@ export class ApiStack extends cdk.Stack {
       threshold: cdk.Duration.seconds(10).toMilliseconds(),
       evaluationPeriods: 2,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-    });
+    }).addAlarmAction(new cw_actions.SnsAction(alertsTopic));
 
     new cloudwatch.Alarm(this, "ApiGateway5xxAlarm", {
       alarmName: `badgetag-api-${environment}-5xx`,
@@ -394,7 +410,7 @@ export class ApiStack extends cdk.Stack {
       threshold: 5,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-    });
+    }).addAlarmAction(new cw_actions.SnsAction(alertsTopic));
 
     new cloudwatch.Alarm(this, "DynamoThrottleAlarm", {
       alarmName: `badgetag-api-${environment}-dynamodb-throttles`,
@@ -403,7 +419,7 @@ export class ApiStack extends cdk.Stack {
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-    });
+    }).addAlarmAction(new cw_actions.SnsAction(alertsTopic));
 
     // Publish identifiers to SSM instead of CloudFormation stack exports —
     // see `apiStackParamPaths`. Avoids a CloudFormation `Fn::ImportValue`

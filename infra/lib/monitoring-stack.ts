@@ -1,18 +1,31 @@
 import * as cdk from "aws-cdk-lib";
+import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
 import { dataStackParamPaths } from "./data-stack";
 import { apiStackParamPaths } from "./api-stack";
 import { frontendStackParamPaths } from "./frontend-stack";
+import { rumStackParamPaths } from "./rum-stack";
 
 export interface MonitoringStackProps extends cdk.StackProps {
   /**
    * Deployment environment (e.g. "dev", "staging", "prod"). Used to look up
-   * ApiStack's, DataStack's, and FrontendStack's published resource
-   * identifiers in SSM Parameter Store.
+   * ApiStack's, DataStack's, FrontendStack's, and RumStack's published
+   * resource identifiers in SSM Parameter Store.
    */
   readonly environment: string;
+  /**
+   * Email address to notify when the monthly cost budget alarm fires. Pass
+   * via CDK context key `alertEmail` (same address AuthStack alarms use).
+   */
+  readonly alertEmail: string;
+  /**
+   * Monthly AWS cost threshold, in USD, for the budget alarm. Pass via CDK
+   * context key `monthlyBudgetUsd`.
+   * @default 25
+   */
+  readonly monthlyBudgetUsd?: number;
 }
 
 /**
@@ -42,6 +55,7 @@ export class MonitoringStack extends cdk.Stack {
     const apiParamPaths = apiStackParamPaths(environment);
     const dataParamPaths = dataStackParamPaths(environment);
     const frontendParamPaths = frontendStackParamPaths(environment);
+    const rumParamPaths = rumStackParamPaths(environment);
 
     const apiId = ssm.StringParameter.valueForStringParameter(this, apiParamPaths.apiId);
     const functionName = ssm.StringParameter.valueForStringParameter(
@@ -59,6 +73,10 @@ export class MonitoringStack extends cdk.Stack {
     const distributionId = ssm.StringParameter.valueForStringParameter(
       this,
       frontendParamPaths.distributionId,
+    );
+    const rumAppMonitorName = ssm.StringParameter.valueForStringParameter(
+      this,
+      rumParamPaths.appMonitorName,
     );
 
     const lambdaMetric = (metricName: string, statistic: string) =>
@@ -106,6 +124,17 @@ export class MonitoringStack extends cdk.Stack {
         dimensionsMap: { DistributionId: distributionId, Region: "Global" },
         region: "us-east-1",
         statistic,
+      });
+
+    // RUM publishes to AWS/RUM dimensioned by `application_name` (the app
+    // monitor's name, not its GUID id) — see RumStack.
+    const rumMetric = (metricName: string, statistic: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/RUM",
+        metricName,
+        dimensionsMap: { application_name: rumAppMonitorName },
+        statistic,
+        period: cdk.Duration.minutes(5),
       });
 
     const dashboard = new cloudwatch.Dashboard(this, "Dashboard", {
@@ -183,16 +212,75 @@ export class MonitoringStack extends cdk.Stack {
       }),
     );
 
+    // RUM — client-side sessions, page views, JS/HTTP errors, and Core Web
+    // Vitals. Metric names below are AWS's documented AWS/RUM metrics as of
+    // this writing; confirm against `aws cloudwatch list-metrics
+    // --namespace AWS/RUM` after the first deploy and adjust if any have
+    // changed — cheap to fix once real data lands (see
+    // docs-md/observability/rum.md).
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "RUM Sessions & Page Views",
+        left: [rumMetric("SessionCount", "Sum"), rumMetric("PageViewCount", "Sum")],
+        width: 12,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "RUM JS & HTTP Errors",
+        left: [rumMetric("JsErrorCount", "Sum"), rumMetric("HttpErrorCount", "Sum")],
+        width: 12,
+      }),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "RUM Core Web Vitals (LCP / CLS / FID)",
+        left: [rumMetric("LargestContentfulPaint", "p75"), rumMetric("FirstInputDelay", "p75")],
+        right: [rumMetric("CumulativeLayoutShift", "p75")],
+        width: 24,
+      }),
+    );
+
     dashboard.addWidgets(
       new cloudwatch.TextWidget({
         markdown:
           "**Geographic traffic**: CloudFront doesn't publish a per-country " +
-          "breakdown to CloudWatch. View it in the CloudFront console under " +
-          "this distribution → Reports & analytics → Viewers, or at " +
-          `https://console.aws.amazon.com/cloudfront/v4/home?region=us-east-1#/distributions/${distributionId}`,
+          "breakdown to CloudWatch, but CloudWatch RUM does. View it in the " +
+          "RUM console for this app monitor → Web page performance → " +
+          `Countries, or at https://console.aws.amazon.com/cloudwatch/home?region=${this.region}#rum:overview or ` +
+          `the CloudFront distribution's own report at https://console.aws.amazon.com/cloudfront/v4/home?region=us-east-1#/distributions/${distributionId}`,
         width: 24,
         height: 2,
       }),
     );
+
+    // Cost budget — nothing watched spend before this. RUM bills per event
+    // and CloudFront's "additional metrics" are already on, so a monthly
+    // threshold alert is cheap insurance against a runaway bill (e.g. RUM
+    // event spam from a scraped identity pool ID). Dev and prod are
+    // separate AWS accounts, so this is one budget per environment, not a
+    // combined one.
+    new budgets.CfnBudget(this, "MonthlyCostBudget", {
+      budget: {
+        budgetName: `badgetag-${environment}-monthly-cost`,
+        budgetType: "COST",
+        timeUnit: "MONTHLY",
+        budgetLimit: {
+          amount: props.monthlyBudgetUsd ?? 25,
+          unit: "USD",
+        },
+      },
+      notificationsWithSubscribers: [
+        {
+          notification: {
+            notificationType: "ACTUAL",
+            comparisonOperator: "GREATER_THAN",
+            threshold: 100,
+          },
+          // Email subscriber directly, rather than SNS — avoids needing an
+          // SNS topic policy granting budgets.amazonaws.com publish rights.
+          subscribers: [{ subscriptionType: "EMAIL", address: props.alertEmail }],
+        },
+      ],
+    });
   }
 }

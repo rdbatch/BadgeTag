@@ -80,6 +80,13 @@ describe("ApiStack", () => {
       });
     });
 
+    test("enables X-Ray active tracing (client<->server correlation is imperfect for HTTP APIs, but the trace at least begins here)", () => {
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        FunctionName: "badgetag-api-test",
+        TracingConfig: { Mode: "Active" },
+      });
+    });
+
     test("has DynamoDB read/write permissions", () => {
       template.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {
@@ -211,39 +218,49 @@ describe("ApiStack", () => {
       });
     });
 
-    test("creates an alarm on Lambda errors", () => {
+    test("creates an alarm on Lambda errors, routed to the shared alerts topic", () => {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: "badgetag-api-test-lambda-errors",
         Namespace: "AWS/Lambda",
         MetricName: "Errors",
         Threshold: 5,
+        AlarmActions: Match.anyValue(),
       });
     });
 
-    test("creates an alarm on Lambda p99 duration", () => {
+    test("creates an alarm on Lambda p99 duration, routed to the shared alerts topic", () => {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: "badgetag-api-test-lambda-p99-duration",
         Namespace: "AWS/Lambda",
         MetricName: "Duration",
         ExtendedStatistic: "p99",
+        AlarmActions: Match.anyValue(),
       });
     });
 
-    test("creates an alarm on API Gateway 5xx responses", () => {
+    test("creates an alarm on API Gateway 5xx responses, routed to the shared alerts topic", () => {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: "badgetag-api-test-5xx",
         Namespace: "AWS/ApiGateway",
+        AlarmActions: Match.anyValue(),
       });
     });
 
-    test("creates an alarm on DynamoDB throttled requests", () => {
+    test("creates an alarm on DynamoDB throttled requests, routed to the shared alerts topic", () => {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: "badgetag-api-test-dynamodb-throttles",
         Namespace: "AWS/DynamoDB",
         MetricName: "ThrottledRequests",
+        AlarmActions: Match.anyValue(),
       });
     });
 
+    test("every alarm this stack creates has a non-empty AlarmActions (none of the 4 alarms are silent)", () => {
+      const alarms = template.findResources("AWS::CloudWatch::Alarm");
+      for (const alarm of Object.values(alarms)) {
+        expect((alarm as { Properties: { AlarmActions?: unknown[] } }).Properties.AlarmActions?.length).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe("OG image bulk regeneration", () => {

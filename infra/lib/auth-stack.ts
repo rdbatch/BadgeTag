@@ -21,6 +21,7 @@ export function authStackParamPaths(environment: string) {
   return {
     userPoolId: `${base}/user-pool-id`,
     userPoolClientId: `${base}/user-pool-client-id`,
+    alertsTopicArn: `${base}/alerts-topic-arn`,
   };
 }
 
@@ -105,8 +106,13 @@ export class AuthStack extends cdk.Stack {
   /** SES Configuration Set for reputation metrics, attached to Cognito sends */
   public readonly sesConfigurationSet: ses.ConfigurationSet;
 
-  /** SNS topic receiving SES reputation alarm notifications */
-  public readonly sesAlertsTopic: sns.Topic;
+  /**
+   * Shared SNS topic for operational alarm notifications across every
+   * stack (SES reputation, ApiStack's Lambda/API Gateway/DynamoDB alarms,
+   * RumStack's client-side error alarm) — one topic, one subscription to
+   * confirm, one inbox to watch.
+   */
+  public readonly alertsTopic: sns.Topic;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -133,14 +139,14 @@ export class AuthStack extends cdk.Stack {
       reputationMetrics: true,
     });
 
-    // SNS topic for SES reputation alarm notifications.
+    // Shared SNS topic for every stack's operational alarms.
     // Note: email subscriptions require manual confirmation after first deploy —
     // check the inbox at the alertEmail address for the confirmation link.
     const alertEmail = props.alertEmail;
-    this.sesAlertsTopic = new sns.Topic(this, "SesAlertsTopic", {
-      topicName: `badgetag-ses-alerts-${environment}`,
+    this.alertsTopic = new sns.Topic(this, "AlertsTopic", {
+      topicName: `badgetag-alerts-${environment}`,
     });
-    this.sesAlertsTopic.addSubscription(
+    this.alertsTopic.addSubscription(
       new sns_subs.EmailSubscription(alertEmail),
     );
 
@@ -168,7 +174,7 @@ export class AuthStack extends cdk.Stack {
       threshold: 0.03,
       ...sesAlarmProps,
     });
-    bounceAlarm.addAlarmAction(new cw_actions.SnsAction(this.sesAlertsTopic));
+    bounceAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertsTopic));
 
     const complaintAlarm = new cloudwatch.Alarm(this, "SesComplaintRateAlarm", {
       alarmName: `badgetag-${environment}-ses-complaint-rate`,
@@ -182,7 +188,7 @@ export class AuthStack extends cdk.Stack {
       threshold: 0.0008,
       ...sesAlarmProps,
     });
-    complaintAlarm.addAlarmAction(new cw_actions.SnsAction(this.sesAlertsTopic));
+    complaintAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertsTopic));
 
     // Cognito User Pool with native passwordless email OTP.
     // Choice-based authentication (email OTP as first factor) requires the
@@ -278,6 +284,11 @@ export class AuthStack extends cdk.Stack {
       stringValue: this.userPoolClient.userPoolClientId,
     });
 
+    new ssm.StringParameter(this, "AlertsTopicArnParam", {
+      parameterName: paramPaths.alertsTopicArn,
+      stringValue: this.alertsTopic.topicArn,
+    });
+
 
     // Outputs retained for human visibility (console/CLI) only — no
     // exportName, so no other stack can create a CloudFormation import
@@ -298,8 +309,8 @@ export class AuthStack extends cdk.Stack {
       value: this.sesConfigurationSet.configurationSetName,
     });
 
-    new cdk.CfnOutput(this, "SesAlertsTopicArn", {
-      value: this.sesAlertsTopic.topicArn,
+    new cdk.CfnOutput(this, "AlertsTopicArn", {
+      value: this.alertsTopic.topicArn,
     });
   }
 }

@@ -453,6 +453,11 @@ export async function handleMockRequest(request: Request): Promise<Response | nu
         userPoolId: 'local_mock',
         userPoolClientId: 'local-mock-client',
         apiBase: '',
+        // Deliberately empty — RUM must never initialize in mock mode (see
+        // monitoring/rum.ts's double gate), so there's no mock app monitor
+        // id to serve here.
+        rumAppMonitorId: '',
+        rumIdentityPoolId: '',
       })
     }
     if (url.pathname.startsWith('/api/')) {

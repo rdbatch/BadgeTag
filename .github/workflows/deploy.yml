@@ -104,18 +104,23 @@ jobs:
         working-directory: infra
         run: npm ci
 
-      - name: Deploy backend stacks (Data, Auth, Api, Waf)
+      - name: Deploy backend stacks (Data, Auth, Api, Rum, Waf)
         working-directory: infra
         # Waf is deployed here (not with Frontend below) because
         # FrontendStack references its Web ACL ARN directly (via
         # crossRegionReferences — see infra/bin/app.ts) rather than
         # through SSM, so it must already exist before Frontend's
-        # `--exclusively` deploy runs.
+        # `--exclusively` deploy runs. Rum is deployed here (not with
+        # Monitoring, which owns its dashboard widgets) because its app
+        # monitor/identity pool IDs are AWS-generated and must exist before
+        # the "Write runtime config.json" step below can read them from
+        # cdk-outputs.json — see rum-stack.ts's doc comment.
         run: |
           npx cdk deploy \
             "BadgeTag-Data-${ENVIRONMENT}" \
             "BadgeTag-Auth-${ENVIRONMENT}" \
             "BadgeTag-Api-${ENVIRONMENT}" \
+            "BadgeTag-Rum-${ENVIRONMENT}" \
             "BadgeTag-Waf-${ENVIRONMENT}" \
             --context environment="$ENVIRONMENT" \
             --context region="$REGION" \
@@ -131,13 +136,20 @@ jobs:
         run: |
           USER_POOL_ID=$(jq -r ".\"BadgeTag-Auth-${ENVIRONMENT}\".UserPoolId" cdk-outputs.json)
           USER_POOL_CLIENT_ID=$(jq -r ".\"BadgeTag-Auth-${ENVIRONMENT}\".UserPoolClientId" cdk-outputs.json)
+          RUM_APP_MONITOR_ID=$(jq -r ".\"BadgeTag-Rum-${ENVIRONMENT}\".RumAppMonitorId" cdk-outputs.json)
+          # No guest role ARN: the browser resolves it from the identity
+          # pool's role attachment via RUM's enhanced credential flow —
+          # see monitoring/rum.ts.
+          RUM_IDENTITY_POOL_ID=$(jq -r ".\"BadgeTag-Rum-${ENVIRONMENT}\".RumIdentityPoolId" cdk-outputs.json)
 
           cat > ../frontend/dist/config.json <<EOF
           {
             "region": "${REGION}",
             "userPoolId": "${USER_POOL_ID}",
             "userPoolClientId": "${USER_POOL_CLIENT_ID}",
-            "apiBase": ""
+            "apiBase": "",
+            "rumAppMonitorId": "${RUM_APP_MONITOR_ID}",
+            "rumIdentityPoolId": "${RUM_IDENTITY_POOL_ID}"
           }
           EOF
 

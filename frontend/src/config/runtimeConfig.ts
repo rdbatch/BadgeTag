@@ -14,6 +14,13 @@ export interface RuntimeConfig {
   userPoolClientId: string
   /** Base URL for API requests. Empty string means same-origin (via CloudFront). */
   apiBase: string
+  /**
+   * CloudWatch RUM identifiers (see RumStack). Optional and independently
+   * gated: absent/empty on any deploy that predates RUM or a config.json
+   * fetch failure, in which case RUM simply stays off rather than throwing.
+   */
+  rumAppMonitorId?: string
+  rumIdentityPoolId?: string
 }
 
 let cachedConfig: RuntimeConfig | null = null

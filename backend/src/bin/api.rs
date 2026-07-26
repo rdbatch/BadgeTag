@@ -1,6 +1,6 @@
 use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
 use lambda_runtime::{Error, LambdaEvent, service_fn};
-use tracing_subscriber::EnvFilter;
+use tracing::Instrument;
 
 use badgetag_backend::auth::AuthConfig;
 use badgetag_backend::router::route;
@@ -16,17 +16,28 @@ async fn handler(
     state: &AppState,
     event: LambdaEvent<ApiGatewayV2httpRequest>,
 ) -> Result<ApiGatewayV2httpResponse, Error> {
-    let (request, _context) = event.into_parts();
-    let response = route(&request, &state.store, &state.auth_config, &state.site_url).await;
+    let (request, context) = event.into_parts();
+    let request_id = context.request_id;
+
+    // Every log line for this request carries request_id, so a client-side
+    // RUM session's x-request-id header can be joined against these logs.
+    let span = tracing::info_span!("request", request_id = %request_id);
+    let mut response = route(&request, &state.store, &state.auth_config, &state.site_url)
+        .instrument(span)
+        .await;
+
+    // Same-origin (via CloudFront's /api/* behavior), so the browser can
+    // read this without any CORS configuration.
+    if let Ok(value) = request_id.parse() {
+        response.headers.insert("x-request-id", value);
+    }
+
     Ok(response)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .json()
-        .init();
+    badgetag_backend::init_tracing();
 
     let config = aws_config::load_from_env().await;
     let dynamo_client = aws_sdk_dynamodb::Client::new(&config);
