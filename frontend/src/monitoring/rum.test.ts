@@ -60,6 +60,25 @@ describe('resolveRumConfig', () => {
     expect(resolved?.rumConfig.allowCookies).toBe(false)
     expect(resolved?.rumConfig.disableAutoPageView).toBe(true)
   })
+
+  it('sets an explicit endpoint matching the config region, in every region', () => {
+    // aws-rum-web's own defaultConfig() hardcodes the dataplane endpoint to
+    // us-west-2 and merges it in ahead of our config, so the constructor's
+    // `region` argument alone never determines where requests actually go
+    // — only their SigV4 signing scope. Left unset, every request is
+    // signed for one region but sent to another and rejected. Regression
+    // test for that: assert every region gets its own matching endpoint,
+    // not just a coincidental match for us-west-2.
+    for (const region of ['us-east-2', 'us-west-2', 'eu-west-1']) {
+      const resolved = resolveRumConfig({
+        ...baseConfig,
+        region,
+        rumAppMonitorId: 'app-1',
+        rumIdentityPoolId: `${region}:pool-1`,
+      })
+      expect(resolved?.rumConfig.endpoint).toBe(`https://dataplane.rum.${region}.amazonaws.com`)
+    }
+  })
 })
 
 describe('pageIdForState', () => {

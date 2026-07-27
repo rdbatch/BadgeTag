@@ -28,6 +28,14 @@ export function resolveRumConfig(
     appMonitorId: config.rumAppMonitorId,
     region: config.region,
     rumConfig: {
+      // aws-rum-web's own defaultConfig() hardcodes endpoint to the
+      // us-west-2 dataplane and merges it in *before* our config, so the
+      // constructor's `region` argument never actually determines the
+      // request's destination — only the SigV4 signing scope. Left
+      // unset, every request is signed for `region` but physically sent
+      // to us-west-2, which AWS rejects with "Credential should be
+      // scoped to a valid region." Must be set explicitly.
+      endpoint: `https://dataplane.rum.${config.region}.amazonaws.com`,
       // No privacy notice exists for this app today, so the session/user
       // cookies RUM would otherwise set are deliberately left off — a
       // session then only lasts for the current page load rather than
