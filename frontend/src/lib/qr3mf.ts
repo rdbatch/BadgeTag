@@ -1,5 +1,6 @@
 import qrcode from 'qrcode-generator'
 import { strToU8, zipSync } from 'fflate'
+import { addTextRelief, type TextFont } from './textMesh'
 
 /**
  * Generates a two-part 3MF model of a QR code for two-color 3D printing.
@@ -24,7 +25,25 @@ export interface Qr3mfOptions {
   quietZoneComponents: number
   /** Height of the raised QR relief above the plate, in millimeters. */
   reliefMm: number
+  /**
+   * Lines of text raised below the QR code, one per entry. Each line adds a
+   * band of height to the plate and is centered horizontally. Empty or
+   * whitespace-only entries are skipped. Rendered in the same dark material
+   * as the QR relief so a two-color print carries the text too.
+   */
+  textLines?: string[]
+  /**
+   * Font for `textLines` (see `loadTextFont`). Without it the bands are
+   * still reserved but no glyphs are drawn, which lets the preview show the
+   * plate size while the font loads. `generateQr3mf` requires it whenever
+   * there are text lines.
+   */
+  textFont?: TextFont
+  /** Horizontal alignment of the text lines on the plate. Defaults to center. */
+  textAlign?: TextAlign
 }
+
+export type TextAlign = 'left' | 'center' | 'right'
 
 export const QR3MF_LIMITS = {
   /**
@@ -53,6 +72,27 @@ export const DEFAULT_QUIET_ZONE_COMPONENTS = 1.5
 
 /** Default height of the raised QR relief above the plate (3 layers at 0.2mm). */
 export const DEFAULT_RELIEF_MM = 0.6
+
+/**
+ * Text layout below the QR code. Each line gets a band
+ * `TEXT_LINE_HEIGHT_MM` tall. All lines share one em size: at most
+ * `TEXT_EM_MM` (Lato Bold strokes come out around 0.7mm thick, printable
+ * with a 0.4mm nozzle), and smaller if the widest line wouldn't otherwise
+ * fit between the side margins.
+ */
+const TEXT_EM_MM = 4.5
+const TEXT_LINE_HEIGHT_MM = 6
+const TEXT_SIDE_MARGIN_MM = 2.4
+
+/** Drops empty/whitespace-only entries — those add no band to the plate. */
+function usableTextLines(textLines: string[] | undefined): string[] {
+  return (textLines ?? []).map((line) => line.trim()).filter((line) => line.length > 0)
+}
+
+/** Total extra plate height (mm) the given text lines require below the QR. */
+export function textBandHeightMm(textLines: string[] | undefined): number {
+  return usableTextLines(textLines).length * TEXT_LINE_HEIGHT_MM
+}
 
 /**
  * Lanyard slot: 14 x 3 mm is the standard ID-badge slot-punch size, so the
@@ -242,8 +282,16 @@ export function buildQr3mfMeshes(
   const pitch = sizeMm / (n + 2 * quietZoneComponents)
   const margin = quietZoneComponents * pitch
 
+  // Text lines stack below the QR code. The QR keeps the top sizeMm x sizeMm
+  // square (y in [0, sizeMm]); the plate is extended downward into negative
+  // y by one band per line so the QR geometry and its tests are unchanged.
+  const lines = usableTextLines(options.textLines)
+  const textHeight = lines.length * TEXT_LINE_HEIGHT_MM
+
   const baseMesh: Mesh = { vertices: [], triangles: [] }
-  addBox(baseMesh, 0, 0, 0, sizeMm, sizeMm, thicknessMm)
+  // Avoid -0 so a text-free plate is byte-identical to before.
+  const plateBottomY = textHeight > 0 ? -textHeight : 0
+  addBox(baseMesh, 0, plateBottomY, 0, sizeMm, sizeMm, thicknessMm)
 
   if (lanyardLoop) {
     const tabWidth = SLOT_WIDTH_MM + 2 * TAB_WALL_MM
@@ -281,6 +329,36 @@ export function buildQr3mfMeshes(
       )
       c = end
     }
+  }
+
+  // Raise each text line as relief in the same mesh/material as the QR, so a
+  // two-color print carries the text too. Each line is centered vertically
+  // in its band and aligned horizontally per `textAlign`.
+  const font = options.textFont
+  const align = options.textAlign ?? 'center'
+  if (font && lines.length > 0) {
+    const widest = Math.max(...lines.map((line) => font.advanceWidth(line, 1)))
+    const em = Math.min(TEXT_EM_MM, (sizeMm - 2 * TEXT_SIDE_MARGIN_MM) / widest)
+    lines.forEach((line, index) => {
+      const width = font.advanceWidth(line, 1) * em
+
+      // Center the span from descender to cap height inside the band.
+      const bandCenter = -(index + 0.5) * TEXT_LINE_HEIGHT_MM
+      const baseline = bandCenter - ((font.capHeight - font.descender) * em) / 2
+
+      addTextRelief(
+        qrMesh,
+        font.glyphContours(line, em),
+        align === 'left'
+          ? TEXT_SIDE_MARGIN_MM
+          : align === 'right'
+            ? sizeMm - TEXT_SIDE_MARGIN_MM - width
+            : (sizeMm - width) / 2,
+        baseline,
+        thicknessMm,
+        thicknessMm + reliefMm,
+      )
+    })
   }
 
   return { base: baseMesh, qr: qrMesh }
@@ -327,6 +405,10 @@ export function generateQr3mf(
     throw new RangeError(
       `reliefMm must be between ${QR3MF_LIMITS.minReliefMm} and ${QR3MF_LIMITS.maxReliefMm}, got ${reliefMm}`,
     )
+  }
+
+  if (usableTextLines(options.textLines).length > 0 && !options.textFont) {
+    throw new Error('textFont is required when textLines are given')
   }
 
   const { base: baseMesh, qr: qrMesh } = buildQr3mfMeshes(text, options)

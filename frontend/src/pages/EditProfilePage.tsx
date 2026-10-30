@@ -911,6 +911,9 @@ export function EditProfilePage() {
             profileId={profileId}
             isOpen={showPrint3DModal}
             onClose={() => setShowPrint3DModal(false)}
+            displayName={displayName}
+            pronouns={pronouns}
+            slug={initialSlug}
           />
         )}
 

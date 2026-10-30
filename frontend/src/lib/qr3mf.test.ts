@@ -7,7 +7,11 @@ import {
   DEFAULT_RELIEF_MM,
   generateQr3mf,
   QR3MF_LIMITS,
+  textBandHeightMm,
 } from './qr3mf'
+import { loadTestFont, openEdgeCount } from '../test/textFontFixture'
+
+const FONT = loadTestFont()
 
 const TEST_URL = 'https://badgetag.me/p/abc123def456'
 
@@ -296,6 +300,172 @@ describe('generateQr3mf', () => {
         reliefMm: QR3MF_LIMITS.maxReliefMm + 0.1,
       }),
     ).toThrow(RangeError)
+  })
+})
+
+describe('text lines below the QR code', () => {
+  const NO_LOOP = { ...VALID_OPTIONS, lanyardLoop: false }
+
+  function yRange(vertices: number[]) {
+    let min = Infinity
+    let max = -Infinity
+    for (let i = 1; i < vertices.length; i += 3) {
+      min = Math.min(min, vertices[i])
+      max = Math.max(max, vertices[i])
+    }
+    return { min, max }
+  }
+
+  it('leaves the plate unchanged when no text lines are given', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const empty = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: [] })
+    expect(empty.base.vertices).toEqual(plain.base.vertices)
+  })
+
+  it('skips empty and whitespace-only lines', () => {
+    expect(textBandHeightMm(['', '   '])).toBe(0)
+    const meshes = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: ['', '   '] })
+    expect(yRange(meshes.base.vertices).min).toBe(0)
+  })
+
+  it('extends the plate downward by one band per line, keeping the QR on top', () => {
+    const one = yRange(
+      buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: ['Ada'] }).base.vertices,
+    )
+    const two = yRange(
+      buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: ['Ada', 'she/her'] }).base
+        .vertices,
+    )
+    expect(one.max).toBe(60)
+    expect(two.max).toBe(60)
+    expect(one.min).toBeCloseTo(-textBandHeightMm(['Ada']))
+    expect(two.min).toBeCloseTo(2 * one.min)
+  })
+
+  it('reserves the bands but draws no glyphs until a font is supplied', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const noFont = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: ['Ada'] })
+    expect(noFont.qr.vertices).toEqual(plain.qr.vertices)
+    expect(yRange(noFont.base.vertices).min).toBeLessThan(0)
+  })
+
+  it('raises the text in the QR (dark) part, inside its band and the plate', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const meshes = buildQr3mfMeshes(TEST_URL, {
+      ...NO_LOOP,
+      textLines: ['Ada Lovelace'],
+      textFont: FONT,
+    })
+    const added = meshes.qr.vertices.slice(plain.qr.vertices.length)
+    expect(added.length).toBeGreaterThan(0)
+
+    for (let i = 0; i < added.length; i += 3) {
+      const [x, y, z] = [added[i], added[i + 1], added[i + 2]]
+      expect(x).toBeGreaterThan(0)
+      expect(x).toBeLessThan(60)
+      expect(y).toBeLessThan(0)
+      expect(y).toBeGreaterThan(-textBandHeightMm(['Ada Lovelace']))
+      expect([3, 3 + DEFAULT_RELIEF_MM]).toContainEqual(z)
+    }
+  })
+
+  it('centers each line horizontally', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const meshes = buildQr3mfMeshes(TEST_URL, {
+      ...NO_LOOP,
+      textLines: ['HOH'],
+      textFont: FONT,
+    })
+    const added = meshes.qr.vertices.slice(plain.qr.vertices.length)
+    let minX = Infinity
+    let maxX = -Infinity
+    for (let i = 0; i < added.length; i += 3) {
+      minX = Math.min(minX, added[i])
+      maxX = Math.max(maxX, added[i])
+    }
+    // Side bearings make this approximate, but symmetric glyphs land close.
+    expect((minX + maxX) / 2).toBeCloseTo(30, 0)
+  })
+
+  it('aligns lines to the left margin, center, or right margin', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const xRange = (textAlign: 'left' | 'center' | 'right') => {
+      const { qr } = buildQr3mfMeshes(TEST_URL, {
+        ...NO_LOOP,
+        textLines: ['HOH'],
+        textFont: FONT,
+        textAlign,
+      })
+      const added = qr.vertices.slice(plain.qr.vertices.length)
+      const xs = added.filter((_, i) => i % 3 === 0)
+      return { min: Math.min(...xs), max: Math.max(...xs) }
+    }
+    const left = xRange('left')
+    const center = xRange('center')
+    const right = xRange('right')
+
+    // Same width everywhere; only the position changes.
+    expect(right.max - right.min).toBeCloseTo(left.max - left.min)
+    expect(left.min).toBeLessThan(center.min)
+    expect(center.min).toBeLessThan(right.min)
+    // Left and right sit about the same distance from their edges.
+    expect(left.min).toBeCloseTo(60 - right.max, 0)
+    expect(left.min).toBeLessThan(5)
+  })
+
+  it('shrinks a line that is too wide for the plate so it fits', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const long = 'badgetag.me/p/abc123def456/and-then-some-more'
+    const meshes = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: [long], textFont: FONT })
+    const added = meshes.qr.vertices.slice(plain.qr.vertices.length)
+    for (let i = 0; i < added.length; i += 3) {
+      expect(added[i]).toBeGreaterThanOrEqual(0)
+      expect(added[i]).toBeLessThanOrEqual(60)
+    }
+  })
+
+  it('sets every line at the same size, shrinking all of them for a long line', () => {
+    // Height of the "H" in each line's band; equal heights mean equal size.
+    const capHeights = (textLines: string[]) => {
+      const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+      const { qr } = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines, textFont: FONT })
+      const added = qr.vertices.slice(plain.qr.vertices.length)
+      const band = textBandHeightMm(['x'])
+      return textLines.map((_, line) => {
+        const ys: number[] = []
+        for (let i = 1; i < added.length; i += 3) {
+          if (added[i] <= -line * band && added[i] > -(line + 1) * band) ys.push(added[i])
+        }
+        return Math.max(...ys) - Math.min(...ys)
+      })
+    }
+
+    const short = capHeights(['HH', 'HHHH'])
+    expect(short[0]).toBeCloseTo(short[1])
+
+    const long = capHeights(['HH', 'HHHHHHHHHHHHHHHHHHHHHHHH'])
+    expect(long[0]).toBeCloseTo(long[1])
+    expect(long[0]).toBeLessThan(short[0])
+  })
+
+  it('keeps both parts watertight with text present', () => {
+    const { base, qr } = buildQr3mfMeshes(TEST_URL, {
+      ...VALID_OPTIONS,
+      textLines: ['badgetag.me/@ada', 'Ada Lovelace', 'she/her'],
+      textFont: FONT,
+    })
+    expect(openEdgeCount(base)).toBe(0)
+    expect(openEdgeCount(qr)).toBe(0)
+  })
+
+  it('requires a font to export text lines', () => {
+    expect(() => generateQr3mf(TEST_URL, { ...VALID_OPTIONS, textLines: ['Ada'] })).toThrow(
+      /textFont/,
+    )
+    const { objects } = parseModel(
+      generateQr3mf(TEST_URL, { ...VALID_OPTIONS, textLines: ['Ada'], textFont: FONT }),
+    )
+    expect(objects.map((o) => o.name)).toEqual(['Base plate', 'QR code'])
   })
 })
 

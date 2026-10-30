@@ -20,7 +20,7 @@ const QR_COLOR = 0x1f2937
 const BACKGROUND_COLOR = 0xf3f4f6 // Tailwind gray-100, matches the fallback tile
 
 /**
- * The model is rescaled so the plate always spans this many world units.
+ * The model is rescaled so its longest side always spans this many world units.
  * The camera never has to move when the size slider changes, which keeps
  * the user's drag-rotation intact across control tweaks.
  */
@@ -67,7 +67,18 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
   const sceneRef = useRef<SceneContext | null>(null)
   const [supported, setSupported] = useState(true)
 
-  const { sizeMm, thicknessMm, lanyardLoop, quietZoneComponents, reliefMm } = options
+  const {
+    sizeMm,
+    thicknessMm,
+    lanyardLoop,
+    quietZoneComponents,
+    reliefMm,
+    textLines,
+    textFont,
+    textAlign,
+  } = options
+  // Arrays get a new identity every render; key the rebuild on content.
+  const textKey = JSON.stringify(textLines ?? [])
 
   // One-time scene setup: renderer, camera, lights, controls.
   useEffect(() => {
@@ -183,26 +194,44 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
       lanyardLoop,
       quietZoneComponents,
       reliefMm,
+      textLines: JSON.parse(textKey) as string[],
+      textFont,
+      textAlign,
     })
 
     disposeModelChildren(ctx.model)
+    const baseGeometry = toGeometry(meshes.base)
     ctx.model.add(
-      new THREE.Mesh(toGeometry(meshes.base), ctx.baseMaterial),
+      new THREE.Mesh(baseGeometry, ctx.baseMaterial),
       new THREE.Mesh(toGeometry(meshes.qr), ctx.qrMaterial),
     )
 
-    // Center the plate on the origin and normalize its footprint so the
-    // fixed camera frames it at any physical size.
-    const scale = PLATE_WORLD_UNITS / size
+    // Center the whole tag (text bands and lanyard tab included) on the
+    // origin and normalize its longest side so the fixed camera frames it
+    // at any physical size.
+    baseGeometry.computeBoundingBox()
+    const box = baseGeometry.boundingBox ?? new THREE.Box3()
+    const span = Math.max(box.max.x - box.min.x, box.max.y - box.min.y)
+    const scale = PLATE_WORLD_UNITS / span
     ctx.model.scale.setScalar(scale)
     ctx.model.position.set(
-      -PLATE_WORLD_UNITS / 2,
-      -PLATE_WORLD_UNITS / 2,
+      (-(box.min.x + box.max.x) / 2) * scale,
+      (-(box.min.y + box.max.y) / 2) * scale,
       (-thicknessMm * scale) / 2,
     )
 
     ctx.render()
-  }, [profileUrl, sizeMm, thicknessMm, lanyardLoop, quietZoneComponents, reliefMm])
+  }, [
+    profileUrl,
+    sizeMm,
+    thicknessMm,
+    lanyardLoop,
+    quietZoneComponents,
+    reliefMm,
+    textKey,
+    textFont,
+    textAlign,
+  ])
 
   if (!supported) {
     return (
