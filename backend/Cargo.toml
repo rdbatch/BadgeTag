@@ -17,7 +17,7 @@ aws-sdk-cognitoidentityprovider = "1"
 aws-sdk-dynamodb = "1"
 aws-sdk-s3 = "1"
 base64 = "0.22"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 lambda_runtime = "0.13"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
