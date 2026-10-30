@@ -26,6 +26,9 @@
     "tailwindcss": "^4.3.2",
     "three": "^0.185.1"
   },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
