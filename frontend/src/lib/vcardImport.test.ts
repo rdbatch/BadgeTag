@@ -53,6 +53,46 @@ describe('parseVCard', () => {
     ])
   })
 
+  it('matches platforms on the host, not a substring, so lookalike hosts fall back to website', () => {
+    const vcard = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Spoof User',
+      'URL:https://github.com.evil.example/me',
+      'URL:https://evil.example/github.com',
+      'URL:https://notlinkedin.com/in/test',
+      'END:VCARD',
+      '',
+    ].join('\r\n')
+
+    const parsed = parseVCard(vcard)
+    expect(parsed.links).toEqual([
+      { platform: 'website', url: 'https://github.com.evil.example/me' },
+      { platform: 'website', url: 'https://evil.example/github.com' },
+      { platform: 'website', url: 'https://notlinkedin.com/in/test' },
+    ])
+  })
+
+  it('matches platforms on subdomains and scheme-less hosts', () => {
+    const vcard = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Sub User',
+      'URL:https://www.github.com/me',
+      'URL:github.com/me',
+      'URL:https://mastodon.social/@me',
+      'END:VCARD',
+      '',
+    ].join('\r\n')
+
+    const parsed = parseVCard(vcard)
+    expect(parsed.links).toEqual([
+      { platform: 'github', url: 'https://www.github.com/me' },
+      { platform: 'github', url: 'github.com/me' },
+      { platform: 'mastodon', url: 'https://mastodon.social/@me' },
+    ])
+  })
+
   it('extracts locality/region from ADR as location', () => {
     const vcard = [
       'BEGIN:VCARD',
