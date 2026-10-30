@@ -58,17 +58,42 @@ function parseLine(line: string): { name: string; value: string } | null {
   return { name, value }
 }
 
-/** Guesses a SocialPlatform from a URL's domain; falls back to "website". */
+/**
+ * Extracts the lowercased hostname from a URL. Tolerates URLs with a missing
+ * scheme (e.g. "github.com/me") by retrying with an "https://" prefix, since
+ * vCard URL values are not required to include one. Returns an empty string
+ * when no hostname can be parsed.
+ */
+function hostOf(url: string): string {
+  const parse = (candidate: string): string | null => {
+    try {
+      return new URL(candidate).hostname.toLowerCase()
+    } catch {
+      return null
+    }
+  }
+  return parse(url) ?? parse(`https://${url}`) ?? ''
+}
+
+/** True when `host` is exactly `domain` or a subdomain of it (e.g. www.github.com). */
+function hostMatches(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`)
+}
+
+/** Guesses a SocialPlatform from a URL's host; falls back to "website". */
 function detectPlatform(url: string): SocialPlatform {
-  const lower = url.toLowerCase()
-  if (lower.includes('linkedin.com')) return 'linkedin'
-  if (lower.includes('github.com')) return 'github'
-  if (lower.includes('twitter.com') || lower.includes('x.com')) return 'twitter'
-  if (lower.includes('instagram.com')) return 'instagram'
-  if (lower.includes('youtube.com') || lower.includes('youtu.be')) return 'youtube'
-  if (lower.includes('mastodon')) return 'mastodon'
-  if (lower.includes('bsky.app')) return 'bluesky'
-  if (lower.includes('cal.com') || lower.includes('calendly.com')) return 'calendar'
+  const host = hostOf(url)
+  if (hostMatches(host, 'linkedin.com')) return 'linkedin'
+  if (hostMatches(host, 'github.com')) return 'github'
+  if (hostMatches(host, 'twitter.com') || hostMatches(host, 'x.com')) return 'twitter'
+  if (hostMatches(host, 'instagram.com')) return 'instagram'
+  if (hostMatches(host, 'youtube.com') || hostMatches(host, 'youtu.be')) return 'youtube'
+  if (hostMatches(host, 'bsky.app')) return 'bluesky'
+  if (hostMatches(host, 'cal.com') || hostMatches(host, 'calendly.com')) return 'calendar'
+  // Mastodon is federated across many hosts, so match the common "mastodon"
+  // label in the host (e.g. mastodon.social, mastodon.example.org) rather than
+  // a fixed domain.
+  if (host.split('.').includes('mastodon')) return 'mastodon'
   return 'website'
 }
 
