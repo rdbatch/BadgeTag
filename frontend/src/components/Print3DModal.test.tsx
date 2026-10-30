@@ -1,8 +1,54 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Print3DModal } from './Print3DModal'
-import { computeMinSizeMm, DEFAULT_QUIET_ZONE_COMPONENTS, QR3MF_LIMITS } from '../lib/qr3mf'
+import {
+  computeMinSizeMm,
+  DEFAULT_QUIET_ZONE_COMPONENTS,
+  generateQr3mf,
+  QR3MF_LIMITS,
+  type Qr3mfOptions,
+} from '../lib/qr3mf'
+import { loadTestFont } from '../test/textFontFixture'
+
+// jsdom can't fetch the bundled font URL, so serve it from disk instead.
+const loadTextFont = vi.fn(() => Promise.resolve(loadTestFont()))
+vi.mock('../lib/textFont', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/textFont')>()),
+  loadTextFont: () => loadTextFont(),
+}))
+
+// Spy on the exporter while keeping its real behavior.
+vi.mock('../lib/qr3mf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/qr3mf')>()
+  return { ...actual, generateQr3mf: vi.fn(actual.generateQr3mf) }
+})
 
 const PROFILE_ID = 'abc123def456'
+
+/**
+ * Opens the modal, flips the given text switches, optionally picks an
+ * alignment, clicks Download, and returns the options sent to the exporter.
+ */
+async function downloadWith(
+  props: Partial<Parameters<typeof Print3DModal>[0]>,
+  switches: RegExp[],
+  alignment?: string,
+): Promise<Qr3mfOptions> {
+  vi.mocked(generateQr3mf).mockClear()
+  const createObjectURL = vi.fn(() => 'blob:mock')
+  vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  try {
+    const { unmount } = renderModal(props)
+    for (const name of switches) fireEvent.click(screen.getByRole('switch', { name }))
+    if (alignment) fireEvent.click(screen.getByRole('radio', { name: alignment }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Download .3mf' }))
+    unmount()
+    return vi.mocked(generateQr3mf).mock.calls[0][1]
+  } finally {
+    clickSpy.mockRestore()
+    vi.unstubAllGlobals()
+  }
+}
 
 function renderModal(props: Partial<Parameters<typeof Print3DModal>[0]> = {}) {
   const onClose = vi.fn()
@@ -18,7 +64,7 @@ describe('Print3DModal', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('renders the customizer controls when open', () => {
+  it('renders the customizer controls when open', async () => {
     renderModal()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByText('3D Print Your QR Code')).toBeInTheDocument()
@@ -28,7 +74,7 @@ describe('Print3DModal', () => {
     expect(screen.getByLabelText('Relief height')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: /Lanyard loop/ })).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: 'Download .3mf' }),
+      await screen.findByRole('button', { name: 'Download .3mf' }),
     ).toBeInTheDocument()
   })
 
@@ -116,7 +162,7 @@ describe('Print3DModal', () => {
     expect(loopSwitch).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('downloads a .3mf file named after the profile', () => {
+  it('downloads a .3mf file named after the profile', async () => {
     const createObjectURL = vi.fn(() => 'blob:mock')
     const revokeObjectURL = vi.fn()
     vi.stubGlobal('URL', {
@@ -134,7 +180,8 @@ describe('Print3DModal', () => {
 
     try {
       renderModal()
-      fireEvent.click(screen.getByRole('button', { name: 'Download .3mf' }))
+      // Waits for the font the default URL line needs.
+      fireEvent.click(await screen.findByRole('button', { name: 'Download .3mf' }))
 
       expect(createObjectURL).toHaveBeenCalledTimes(1)
       const blob = createObjectURL.mock.calls[0][0] as unknown as Blob
@@ -146,6 +193,134 @@ describe('Print3DModal', () => {
       clickSpy.mockRestore()
       vi.unstubAllGlobals()
     }
+  })
+
+  describe('text below the code', () => {
+    it('offers BadgeTag URL, Name, and Pronouns toggles', () => {
+      renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+      expect(screen.getByRole('switch', { name: /BadgeTag URL/ })).toBeInTheDocument()
+      expect(screen.getByRole('switch', { name: /Name/ })).toBeInTheDocument()
+      expect(screen.getByRole('switch', { name: /Pronouns/ })).toBeInTheDocument()
+    })
+
+    it('starts with the URL line on and name and pronouns off', () => {
+      renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+      expect(screen.getByRole('switch', { name: /BadgeTag URL/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      )
+      expect(screen.getByRole('switch', { name: /Name/ })).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+      expect(screen.getByRole('switch', { name: /Pronouns/ })).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+    })
+
+    it('toggles each text line independently', () => {
+      renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+      const urlSwitch = screen.getByRole('switch', { name: /BadgeTag URL/ })
+      fireEvent.click(urlSwitch)
+      expect(urlSwitch).toHaveAttribute('aria-checked', 'false')
+      expect(screen.getByRole('switch', { name: /Name/ })).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+    })
+
+    it('disables the Name toggle when the profile has no display name', () => {
+      renderModal({ pronouns: 'she/her' })
+      expect(screen.getByRole('switch', { name: /Name/ })).toBeDisabled()
+    })
+
+    it('disables the Pronouns toggle when the profile has no pronouns', () => {
+      renderModal({ displayName: 'Ada Lovelace' })
+      expect(screen.getByRole('switch', { name: /Pronouns/ })).toBeDisabled()
+    })
+
+    it('enables the Name and Pronouns toggles when those fields are present', () => {
+      renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+      expect(screen.getByRole('switch', { name: /Name/ })).toBeEnabled()
+      expect(screen.getByRole('switch', { name: /Pronouns/ })).toBeEnabled()
+    })
+
+    it('does not load the modal font while closed', () => {
+      loadTextFont.mockClear()
+      renderModal({ isOpen: false })
+      expect(loadTextFont).not.toHaveBeenCalled()
+    })
+
+    it('loads the font on open for the default URL line, then enables download', async () => {
+      loadTextFont.mockClear()
+      renderModal()
+
+      expect(screen.getByRole('button', { name: 'Loading font…' })).toBeDisabled()
+      expect(
+        await screen.findByRole('button', { name: 'Download .3mf' }),
+      ).toBeEnabled()
+      expect(loadTextFont).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows an error if the font fails to load', async () => {
+      loadTextFont.mockImplementationOnce(() => Promise.reject(new Error('offline')))
+      renderModal()
+      expect(await screen.findByRole('alert')).toHaveTextContent(/font couldn't load/)
+      expect(screen.getByRole('button', { name: 'Download .3mf' })).toBeDisabled()
+    })
+
+    it('labels the section "Text" without per-line previews', () => {
+      renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+      expect(screen.getByRole('group', { name: 'Text' })).toBeInTheDocument()
+      expect(screen.queryByText('Ada Lovelace')).not.toBeInTheDocument()
+      expect(screen.queryByText('she/her')).not.toBeInTheDocument()
+      expect(screen.queryByText(/\/p\//)).not.toBeInTheDocument()
+    })
+
+    it('shows the alignment control only while a text line is on', () => {
+      renderModal({ displayName: 'Ada Lovelace' })
+      expect(screen.getByRole('radiogroup', { name: 'Text alignment' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('switch', { name: /BadgeTag URL/ }))
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('switch', { name: /^Name/ }))
+      expect(screen.getByRole('radiogroup', { name: 'Text alignment' })).toBeInTheDocument()
+    })
+
+    it('exports no text lines once the URL line is turned off', async () => {
+      const options = await downloadWith({}, [/BadgeTag URL/])
+      expect(options.textLines).toEqual([])
+    })
+
+    it('exports the custom URL as the URL line when a slug is saved', async () => {
+      const options = await downloadWith({ slug: 'ada' }, [])
+      expect(options.textLines).toEqual([`${window.location.host}/@ada`])
+    })
+
+    it('exports the /p/ URL without its scheme when there is no slug', async () => {
+      const options = await downloadWith({}, [])
+      expect(options.textLines).toEqual([
+        `${window.location.origin}/p/${PROFILE_ID}`.replace(/^https?:\/\//, ''),
+      ])
+    })
+
+    it('exports lines in URL, name, pronouns order', async () => {
+      const options = await downloadWith(
+        { displayName: 'Ada Lovelace', pronouns: 'she/her' },
+        [/Pronouns/, /^Name/],
+      )
+      expect(options.textLines?.slice(1)).toEqual(['Ada Lovelace', 'she/her'])
+    })
+
+    it('centers text by default and exports the chosen alignment', async () => {
+      const centered = await downloadWith({}, [])
+      expect(centered.textAlign).toBe('center')
+
+      const left = await downloadWith({}, [], 'Align left')
+      expect(left.textAlign).toBe('left')
+    })
   })
 
   it('closes on Escape', () => {

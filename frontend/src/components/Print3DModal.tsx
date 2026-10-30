@@ -7,6 +7,9 @@ import {
   generateQr3mf,
   QR3MF_LIMITS,
 } from '../lib/qr3mf'
+import type { TextFont } from '../lib/textMesh'
+import type { TextAlign } from '../lib/qr3mf'
+import { TextAlignPicker } from './TextAlignPicker'
 import { useOverlayClose } from '../hooks/useOverlayClose'
 import { LazyLoadErrorBoundary } from './LazyLoadErrorBoundary'
 
@@ -18,6 +21,12 @@ interface Print3DModalProps {
   profileId: string
   isOpen: boolean
   onClose: () => void
+  /** The profile's display name, offered as an optional text line. */
+  displayName?: string
+  /** The profile's pronouns, offered as an optional text line. */
+  pronouns?: string
+  /** The saved custom URL slug; the URL line shows `/@slug` when set. */
+  slug?: string
 }
 
 const DEFAULT_SIZE_MM = 50
@@ -27,7 +36,14 @@ const DEFAULT_THICKNESS_MM = 3
  * Customizer for downloading the profile QR code as a 3D-printable .3mf
  * file. Owner-only: rendered from the edit page, never the public card.
  */
-export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) {
+export function Print3DModal({
+  profileId,
+  isOpen,
+  onClose,
+  displayName,
+  pronouns,
+  slug,
+}: Print3DModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
 
@@ -44,6 +60,62 @@ export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) 
     DEFAULT_QUIET_ZONE_COMPONENTS,
   )
   const [reliefMm, setReliefMm] = useState(DEFAULT_RELIEF_MM)
+
+  // Optional text lines raised below the QR code. Each toggle adds one line
+  // and grows the plate's height. The URL line starts on; name and
+  // pronouns are opt-in.
+  const [showUrlLine, setShowUrlLine] = useState(true)
+  const [showNameLine, setShowNameLine] = useState(false)
+  const [showPronounsLine, setShowPronounsLine] = useState(false)
+  const [textAlign, setTextAlign] = useState<TextAlign>('center')
+
+  // Text shown for the URL line, without the scheme so it stays compact.
+  // Uses the custom URL when one is saved, matching the OG image label;
+  // the QR itself still encodes the permanent /p/ URL.
+  const trimmedSlug = slug?.trim() ?? ''
+  const urlLineText = trimmedSlug
+    ? `${window.location.host}/@${trimmedSlug}`
+    : profileUrl.replace(/^https?:\/\//, '')
+  const trimmedName = displayName?.trim() ?? ''
+  const trimmedPronouns = pronouns?.trim() ?? ''
+
+  const textLines = useMemo(() => {
+    const lines: string[] = []
+    if (showUrlLine) lines.push(urlLineText)
+    if (showNameLine && trimmedName) lines.push(trimmedName)
+    if (showPronounsLine && trimmedPronouns) lines.push(trimmedPronouns)
+    return lines
+  }, [
+    showUrlLine,
+    urlLineText,
+    showNameLine,
+    trimmedName,
+    showPronounsLine,
+    trimmedPronouns,
+  ])
+
+  // The text font (opentype.js + Lato Bold) loads only once a text line is
+  // turned on, so users who never add text don't download it.
+  const [textFont, setTextFont] = useState<TextFont | null>(null)
+  const [fontError, setFontError] = useState(false)
+  const wantsText = textLines.length > 0
+  useEffect(() => {
+    if (!isOpen || !wantsText || textFont) return
+    let cancelled = false
+    setFontError(false)
+    import('../lib/textFont')
+      .then(({ loadTextFont }) => loadTextFont())
+      .then((font) => {
+        if (!cancelled) setTextFont(font)
+      })
+      .catch(() => {
+        if (!cancelled) setFontError(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, wantsText, textFont])
+  const textNotReady = wantsText && !textFont
 
   // The URL's length decides the code's density, and a smaller quiet zone
   // needs less border — both shrink or grow the smallest plate that keeps
@@ -102,12 +174,16 @@ export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) 
   }, [isOpen, onClose])
 
   function handleDownload() {
+    if (textNotReady) return
     const data = generateQr3mf(profileUrl, {
       sizeMm,
       thicknessMm,
       lanyardLoop,
       quietZoneComponents,
       reliefMm,
+      textLines,
+      textFont: textFont ?? undefined,
+      textAlign,
     })
     const blob = new Blob([data], { type: 'model/3mf' })
     const url = URL.createObjectURL(blob)
@@ -170,6 +246,9 @@ export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) 
                     lanyardLoop,
                     quietZoneComponents,
                     reliefMm,
+                    textLines,
+                    textFont: textFont ?? undefined,
+                    textAlign,
                   }}
                 />
               </Suspense>
@@ -304,14 +383,58 @@ export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) 
                 />
               </button>
             </div>
+
+            {/* Text lines below the code */}
+            <div
+              role="group"
+              aria-labelledby="print3d-text-heading"
+              className="mt-5 border-t border-gray-200 pt-4"
+            >
+              <div className="flex items-center justify-between">
+                <h3 id="print3d-text-heading" className="text-sm font-medium text-gray-700">
+                  Text
+                </h3>
+                {wantsText && <TextAlignPicker value={textAlign} onChange={setTextAlign} />}
+              </div>
+
+              <div className="mt-3 space-y-3">
+                <ToggleRow
+                  id="print3d-text-url"
+                  label="BadgeTag URL"
+                  checked={showUrlLine}
+                  onChange={() => setShowUrlLine((v) => !v)}
+                />
+                <ToggleRow
+                  id="print3d-text-name"
+                  label="Name"
+                  checked={showNameLine}
+                  disabled={!trimmedName}
+                  onChange={() => setShowNameLine((v) => !v)}
+                />
+                <ToggleRow
+                  id="print3d-text-pronouns"
+                  label="Pronouns"
+                  checked={showPronounsLine}
+                  disabled={!trimmedPronouns}
+                  onChange={() => setShowPronounsLine((v) => !v)}
+                />
+              </div>
+              {fontError && (
+                <p role="alert" className="mt-3 text-xs text-red-600">
+                  The text font couldn't load. Check your connection, then
+                  toggle a line off and on to retry.
+                </p>
+              )}
+            </div>
     
             {/* Actions */}
             <div className="mt-6 flex gap-3">
               <button
                 onClick={handleDownload}
-                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                disabled={textNotReady}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Download .3mf
+                {textNotReady && !fontError ? 'Loading font…' : 'Download .3mf'}
               </button>
               <button
                 onClick={onClose}
@@ -323,6 +446,60 @@ export function Print3DModal({ profileId, isOpen, onClose }: Print3DModalProps) 
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+interface ToggleRowProps {
+  id: string
+  label: string
+  checked: boolean
+  onChange: () => void
+  disabled?: boolean
+}
+
+/**
+ * A labeled switch for an optional text line. Disabled when the underlying
+ * profile field is empty, so the user can't add a blank line.
+ */
+function ToggleRow({
+  id,
+  label,
+  checked,
+  onChange,
+  disabled = false,
+}: ToggleRowProps) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <label
+        htmlFor={id}
+        className={`min-w-0 text-sm font-medium ${
+          disabled ? 'text-gray-400' : 'text-gray-700'
+        }`}
+      >
+        {label}
+      </label>
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        onClick={onChange}
+        className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:outline-none ${
+          disabled
+            ? 'cursor-not-allowed bg-gray-200'
+            : checked
+              ? 'cursor-pointer bg-blue-600'
+              : 'cursor-pointer bg-gray-300'
+        }`}
+      >
+        <span
+          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${
+            checked ? 'translate-x-5' : 'translate-x-0'
+          }`}
+        />
+      </button>
     </div>
   )
 }
