@@ -165,6 +165,14 @@ function addExtrudedShape(
  * Each glyph is grouped separately so overlapping neighbors (tight
  * kerning) can't be mistaken for holes in each other.
  */
+/**
+ * Extrudes one simple closed outline (no holes) into a watertight solid
+ * between z0 and z1. Used for the rounded base plate.
+ */
+export function addExtrudedOutline(mesh: Mesh, outline: Contour, z0: number, z1: number) {
+  addExtrudedShape(mesh, outline, [], 0, 0, z0, z1)
+}
+
 export function addTextRelief(
   mesh: Mesh,
   glyphs: Contour[][],

@@ -34,3 +34,76 @@ body {
     opacity: 1;
   }
 }
+
+/*
+ * Range slider with a fixed 16px handle (see RangeSlider.tsx). Native
+ * handles differ in size per browser, which makes any mark drawn along the
+ * track drift away from the value it labels; a fixed handle makes the
+ * handle's center land at exactly 8px + pct * (100% - 16px).
+ * --range-pct (0..1) drives the filled part of the track up to the handle.
+ */
+.range-slider {
+  --thumb: 16px;
+  --track: 6px;
+  --fill: calc(var(--thumb) / 2 + var(--range-pct, 0) * (100% - var(--thumb)));
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.range-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.range-slider:focus {
+  outline: none;
+}
+
+.range-slider::-webkit-slider-runnable-track {
+  height: var(--track);
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--color-blue-600, #2563eb) var(--fill),
+    var(--color-gray-200, #e5e7eb) var(--fill)
+  );
+}
+.range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((var(--track) - var(--thumb)) / 2);
+  border: 2px solid #fff;
+  border-radius: 9999px;
+  background: var(--color-blue-600, #2563eb);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.range-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 0.4);
+}
+
+.range-slider::-moz-range-track {
+  height: var(--track);
+  border-radius: 9999px;
+  background: var(--color-gray-200, #e5e7eb);
+}
+.range-slider::-moz-range-progress {
+  height: var(--track);
+  border-radius: 9999px;
+  background: var(--color-blue-600, #2563eb);
+}
+.range-slider::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--thumb);
+  height: var(--thumb);
+  border: 2px solid #fff;
+  border-radius: 9999px;
+  background: var(--color-blue-600, #2563eb);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.range-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 0.4);
+}

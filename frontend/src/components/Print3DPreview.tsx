@@ -6,6 +6,7 @@ import {
   computeMinSizeMm,
   type Mesh as QrMesh,
   type Qr3mfOptions,
+  type TextLine,
 } from '../lib/qr3mf'
 
 interface Print3DPreviewProps {
@@ -76,6 +77,7 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
     textLines,
     textFont,
     textAlign,
+    textScale,
   } = options
   // Arrays get a new identity every render; key the rebuild on content.
   const textKey = JSON.stringify(textLines ?? [])
@@ -187,6 +189,7 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
     // Widening the quiet zone can briefly leave the chosen size below the
     // new minimum until the modal's clamp effect runs; clamp here too so
     // the preview never builds an out-of-range model.
+    const lines = JSON.parse(textKey) as TextLine[]
     const size = Math.max(sizeMm, computeMinSizeMm(profileUrl, quietZoneComponents))
     const meshes = buildQr3mfMeshes(profileUrl, {
       sizeMm: size,
@@ -194,9 +197,10 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
       lanyardLoop,
       quietZoneComponents,
       reliefMm,
-      textLines: JSON.parse(textKey) as string[],
+      textLines: lines,
       textFont,
       textAlign,
+      textScale,
     })
 
     disposeModelChildren(ctx.model)
@@ -231,6 +235,7 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
     textKey,
     textFont,
     textAlign,
+    textScale,
   ])
 
   if (!supported) {

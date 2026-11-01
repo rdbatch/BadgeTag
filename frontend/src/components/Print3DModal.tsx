@@ -1,15 +1,21 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  BADGE_FIT,
+  computeMaxTextScale,
   computeMinSizeMm,
+  computeQrSideMm,
   computeModuleCount,
+  computeTotalHeightMm,
   DEFAULT_QUIET_ZONE_COMPONENTS,
   DEFAULT_RELIEF_MM,
   generateQr3mf,
   QR3MF_LIMITS,
+  type TextAlign,
+  type TextLine,
 } from '../lib/qr3mf'
 import type { TextFont } from '../lib/textMesh'
-import type { TextAlign } from '../lib/qr3mf'
 import { TextAlignPicker } from './TextAlignPicker'
+import { RangeSlider } from './RangeSlider'
 import { useOverlayClose } from '../hooks/useOverlayClose'
 import { LazyLoadErrorBoundary } from './LazyLoadErrorBoundary'
 
@@ -29,8 +35,9 @@ interface Print3DModalProps {
   slug?: string
 }
 
-const DEFAULT_SIZE_MM = 50
-const DEFAULT_THICKNESS_MM = 3
+/** Card-badge width: 52 × 81 mm with the loop and all three text lines. */
+const DEFAULT_SIZE_MM = BADGE_FIT.widthMm
+const DEFAULT_THICKNESS_MM = 2
 
 /**
  * Customizer for downloading the profile QR code as a 3D-printable .3mf
@@ -80,10 +87,10 @@ export function Print3DModal({
   const trimmedPronouns = pronouns?.trim() ?? ''
 
   const textLines = useMemo(() => {
-    const lines: string[] = []
-    if (showUrlLine) lines.push(urlLineText)
-    if (showNameLine && trimmedName) lines.push(trimmedName)
-    if (showPronounsLine && trimmedPronouns) lines.push(trimmedPronouns)
+    const lines: TextLine[] = []
+    if (showUrlLine) lines.push({ text: urlLineText, size: 'small' })
+    if (showNameLine && trimmedName) lines.push({ text: trimmedName, size: 'large' })
+    if (showPronounsLine && trimmedPronouns) lines.push({ text: trimmedPronouns, size: 'large' })
     return lines
   }, [
     showUrlLine,
@@ -125,12 +132,37 @@ export function Print3DModal({
     [profileUrl, quietZoneComponents],
   )
 
+  const totalHeightMm = computeTotalHeightMm({ sizeMm, lanyardLoop, textLines })
+
   // Keep the chosen size valid if a wider quiet zone raises the minimum.
   useEffect(() => {
     setSizeMm((current) => Math.max(current, minSizeMm))
   }, [minSizeMm])
 
-  const componentPitchMm = sizeMm / (componentCount + 2 * quietZoneComponents)
+  // Text size, as a percentage of the defaults. Larger text takes height
+  // from the QR code; the top of the range is where the widest line still
+  // fits on one line (or the QR code hits its scannable minimum). Needs the
+  // font to measure, so it stays at 100% until the font loads.
+  const [textPercent, setTextPercent] = useState(100)
+  const maxTextPercent = useMemo(
+    () =>
+      Math.floor(
+        computeMaxTextScale(profileUrl, {
+          sizeMm,
+          quietZoneComponents,
+          textLines,
+          textFont: textFont ?? undefined,
+        }) * 100,
+      ),
+    [profileUrl, sizeMm, quietZoneComponents, textLines, textFont],
+  )
+  useEffect(() => {
+    setTextPercent((current) => Math.min(current, maxTextPercent))
+  }, [maxTextPercent])
+  const textScale = Math.min(textPercent, maxTextPercent) / 100
+
+  const qrSideMm = computeQrSideMm({ sizeMm, textLines, textScale })
+  const componentPitchMm = qrSideMm / (componentCount + 2 * quietZoneComponents)
 
   // Focus trap and ESC key handling
   useEffect(() => {
@@ -184,6 +216,7 @@ export function Print3DModal({
       textLines,
       textFont: textFont ?? undefined,
       textAlign,
+      textScale,
     })
     const blob = new Blob([data], { type: 'model/3mf' })
     const url = URL.createObjectURL(blob)
@@ -249,6 +282,7 @@ export function Print3DModal({
                     textLines,
                     textFont: textFont ?? undefined,
                     textAlign,
+                    textScale,
                   }}
                 />
               </Suspense>
@@ -268,24 +302,27 @@ export function Print3DModal({
                   Size
                 </label>
                 <span className="text-sm text-gray-500">
-                  {sizeMm} × {sizeMm} mm
+                  {sizeMm} × {Math.round(totalHeightMm)} mm
                 </span>
               </div>
-              <input
-                id="print3d-size"
-                type="range"
-                min={minSizeMm}
-                max={QR3MF_LIMITS.maxSizeMm}
-                step={1}
-                value={sizeMm}
-                onChange={(e) => setSizeMm(Number(e.target.value))}
-                className="mt-2 w-full accent-blue-600"
-              />
-              <p className="mt-1 text-xs text-gray-500">
+              <div className="mt-2">
+                <RangeSlider
+                  id="print3d-size"
+                  min={minSizeMm}
+                  max={QR3MF_LIMITS.maxSizeMm}
+                  step={1}
+                  value={sizeMm}
+                  onChange={setSizeMm}
+                  marks={[BADGE_FIT.widthMm]}
+                />
+              </div>
+              <p className="mt-2 text-xs text-gray-500">
                 The code won't scan reliably if its squares get smaller than{' '}
                 {QR3MF_LIMITS.minModuleMm} mm, so {minSizeMm} mm is as small as
                 this can go. Right now each square is about{' '}
-                {componentPitchMm.toFixed(2)} mm.
+                {componentPitchMm.toFixed(2)} mm. {BADGE_FIT.widthMm} ×{' '}
+                {BADGE_FIT.heightMm} mm fits alongside a standard card-sized
+                conference badge.
               </p>
             </div>
     
@@ -297,16 +334,16 @@ export function Print3DModal({
                 </label>
                 <span className="text-sm text-gray-500">{thicknessMm.toFixed(1)} mm</span>
               </div>
-              <input
-                id="print3d-thickness"
-                type="range"
-                min={QR3MF_LIMITS.minThicknessMm}
-                max={QR3MF_LIMITS.maxThicknessMm}
-                step={0.2}
-                value={thicknessMm}
-                onChange={(e) => setThicknessMm(Number(e.target.value))}
-                className="mt-2 w-full accent-blue-600"
-              />
+              <div className="mt-2">
+                <RangeSlider
+                  id="print3d-thickness"
+                  min={QR3MF_LIMITS.minThicknessMm}
+                  max={QR3MF_LIMITS.maxThicknessMm}
+                  step={0.2}
+                  value={thicknessMm}
+                  onChange={setThicknessMm}
+                />
+              </div>
             </div>
     
             {/* Quiet zone */}
@@ -319,16 +356,16 @@ export function Print3DModal({
                   {quietZoneComponents.toFixed(1)} squares
                 </span>
               </div>
-              <input
-                id="print3d-quiet-zone"
-                type="range"
-                min={QR3MF_LIMITS.minQuietZoneComponents}
-                max={QR3MF_LIMITS.maxQuietZoneComponents}
-                step={0.5}
-                value={quietZoneComponents}
-                onChange={(e) => setQuietZoneComponents(Number(e.target.value))}
-                className="mt-2 w-full accent-blue-600"
-              />
+              <div className="mt-2">
+                <RangeSlider
+                  id="print3d-quiet-zone"
+                  min={QR3MF_LIMITS.minQuietZoneComponents}
+                  max={QR3MF_LIMITS.maxQuietZoneComponents}
+                  step={0.5}
+                  value={quietZoneComponents}
+                  onChange={setQuietZoneComponents}
+                />
+              </div>
               <p className="mt-1 text-xs text-gray-500">
                 Blank border around the code. Smaller fits more code into the
                 same plate; too small can make it harder for cameras to find.
@@ -343,16 +380,16 @@ export function Print3DModal({
                 </label>
                 <span className="text-sm text-gray-500">{reliefMm.toFixed(1)} mm</span>
               </div>
-              <input
-                id="print3d-relief"
-                type="range"
-                min={QR3MF_LIMITS.minReliefMm}
-                max={QR3MF_LIMITS.maxReliefMm}
-                step={0.2}
-                value={reliefMm}
-                onChange={(e) => setReliefMm(Number(e.target.value))}
-                className="mt-2 w-full accent-blue-600"
-              />
+              <div className="mt-2">
+                <RangeSlider
+                  id="print3d-relief"
+                  min={QR3MF_LIMITS.minReliefMm}
+                  max={QR3MF_LIMITS.maxReliefMm}
+                  step={0.2}
+                  value={reliefMm}
+                  onChange={setReliefMm}
+                />
+              </div>
               <p className="mt-1 text-xs text-gray-500">
                 How far the code stands proud of the base plate.
               </p>
@@ -396,6 +433,9 @@ export function Print3DModal({
                 </h3>
                 {wantsText && <TextAlignPicker value={textAlign} onChange={setTextAlign} />}
               </div>
+              <p className="mt-1 text-xs text-gray-500">
+                0.2mm nozzle and arachne wall generation recommended!
+              </p>
 
               <div className="mt-3 space-y-3">
                 <ToggleRow
@@ -419,6 +459,38 @@ export function Print3DModal({
                   onChange={() => setShowPronounsLine((v) => !v)}
                 />
               </div>
+
+              {wantsText && (
+                <div className="mt-4">
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="print3d-text-size"
+                      className="text-sm font-medium text-gray-700"
+                    >
+                      Text size
+                    </label>
+                    <span className="text-sm text-gray-500">
+                      {Math.round(textScale * 100)}%
+                    </span>
+                  </div>
+                  <div className="mt-2">
+                    <RangeSlider
+                      id="print3d-text-size"
+                      min={100}
+                      max={Math.max(100, maxTextPercent)}
+                      step={1}
+                      value={Math.round(textScale * 100)}
+                      onChange={setTextPercent}
+                      disabled={maxTextPercent <= 100}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-gray-500">
+                    {maxTextPercent <= 100
+                      ? 'The longest line already fills the width, so text can’t get any larger.'
+                      : 'Larger text makes the QR code smaller'}
+                  </p>
+                </div>
+              )}
               {fontError && (
                 <p role="alert" className="mt-3 text-xs text-red-600">
                   The text font couldn't load. Check your connection, then

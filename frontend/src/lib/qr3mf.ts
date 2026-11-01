@@ -1,6 +1,6 @@
 import qrcode from 'qrcode-generator'
 import { strToU8, zipSync } from 'fflate'
-import { addTextRelief, type TextFont } from './textMesh'
+import { addExtrudedOutline, addTextRelief, type TextFont } from './textMesh'
 
 /**
  * Generates a two-part 3MF model of a QR code for two-color 3D printing.
@@ -26,12 +26,12 @@ export interface Qr3mfOptions {
   /** Height of the raised QR relief above the plate, in millimeters. */
   reliefMm: number
   /**
-   * Lines of text raised below the QR code, one per entry. Each line adds a
-   * band of height to the plate and is centered horizontally. Empty or
-   * whitespace-only entries are skipped. Rendered in the same dark material
-   * as the QR relief so a two-color print carries the text too.
+   * Lines of text raised below the QR code, top to bottom. Each line adds a
+   * band of height to the plate. Empty or whitespace-only entries are
+   * skipped. Rendered in the same dark material as the QR relief so a
+   * two-color print carries the text too.
    */
-  textLines?: string[]
+  textLines?: TextLine[]
   /**
    * Font for `textLines` (see `loadTextFont`). Without it the bands are
    * still reserved but no glyphs are drawn, which lets the preview show the
@@ -41,9 +41,22 @@ export interface Qr3mfOptions {
   textFont?: TextFont
   /** Horizontal alignment of the text lines on the plate. Defaults to center. */
   textAlign?: TextAlign
+  /**
+   * Text size relative to the defaults, at least 1 (the default). Larger
+   * text takes height from the QR square, so the tag's outside size stays
+   * the same; see `computeMaxTextScale` for the upper bound.
+   */
+  textScale?: number
 }
 
 export type TextAlign = 'left' | 'center' | 'right'
+
+/** One line of text below the QR code. */
+export interface TextLine {
+  text: string
+  /** `small` for supporting text like the URL, `large` for name and pronouns. */
+  size: 'small' | 'large'
+}
 
 export const QR3MF_LIMITS = {
   /**
@@ -55,7 +68,7 @@ export const QR3MF_LIMITS = {
   minModuleMm: 1.2,
   maxSizeMm: 120,
   minThicknessMm: 1.2,
-  maxThicknessMm: 6,
+  maxThicknessMm: 4,
   /**
    * The QR spec asks for a 4-component quiet zone; it scans reliably in
    * practice down to 1. Below that, cameras can't reliably separate the
@@ -67,6 +80,13 @@ export const QR3MF_LIMITS = {
   maxReliefMm: 1.5,
 } as const
 
+/**
+ * The size that tucks behind a standard card-sized (CR80) conference badge
+ * held vertically. A `sizeMm` of `widthMm` with the lanyard loop and all
+ * three text lines (one small, two large) comes out exactly `heightMm` tall.
+ */
+export const BADGE_FIT = { widthMm: 52, heightMm: 81 } as const
+
 /** Default blank border around the code, in component widths. */
 export const DEFAULT_QUIET_ZONE_COMPONENTS = 1.5
 
@@ -74,24 +94,35 @@ export const DEFAULT_QUIET_ZONE_COMPONENTS = 1.5
 export const DEFAULT_RELIEF_MM = 0.6
 
 /**
- * Text layout below the QR code. Each line gets a band
- * `TEXT_LINE_HEIGHT_MM` tall. All lines share one em size: at most
- * `TEXT_EM_MM` (Lato Bold strokes come out around 0.7mm thick, printable
- * with a 0.4mm nozzle), and smaller if the widest line wouldn't otherwise
- * fit between the side margins.
+ * Text layout below the QR code, as an em size per line size. Each line's
+ * band is 4/3 of its em, leaving room for descenders and a gap between
+ * lines. When the widest line would not fit between the side margins, every
+ * line scales down by the same factor, so lines of one size stay equal and
+ * large lines stay larger than small ones.
  */
-const TEXT_EM_MM = 4.5
-const TEXT_LINE_HEIGHT_MM = 6
+const TEXT_EM_MM: Record<TextLine['size'], number> = { small: 4.5, large: 6 }
+const BAND_PER_EM = 4 / 3
 const TEXT_SIDE_MARGIN_MM = 2.4
 
+/** Corner radius of the plate: an ID-1 (credit card) corner, ISO/IEC 7810. */
+export const CORNER_RADIUS_MM = 3.18
+/** Straight segments per rounded corner. */
+const CORNER_SEGMENTS = 8
+
 /** Drops empty/whitespace-only entries — those add no band to the plate. */
-function usableTextLines(textLines: string[] | undefined): string[] {
-  return (textLines ?? []).map((line) => line.trim()).filter((line) => line.length > 0)
+function usableTextLines(textLines: TextLine[] | undefined): TextLine[] {
+  return (textLines ?? [])
+    .map((line) => ({ ...line, text: line.text.trim() }))
+    .filter((line) => line.text.length > 0)
+}
+
+function bandHeight(line: TextLine): number {
+  return TEXT_EM_MM[line.size] * BAND_PER_EM
 }
 
 /** Total extra plate height (mm) the given text lines require below the QR. */
-export function textBandHeightMm(textLines: string[] | undefined): number {
-  return usableTextLines(textLines).length * TEXT_LINE_HEIGHT_MM
+export function textBandHeightMm(textLines: TextLine[] | undefined): number {
+  return usableTextLines(textLines).reduce((sum, line) => sum + bandHeight(line), 0)
 }
 
 /**
@@ -106,6 +137,55 @@ const TAB_WALL_MM = 3
 const TAB_OVERLAP_MM = 2
 /** Segments per semicircular cap of the pill outlines. */
 const CAP_SEGMENTS = 16
+/** How far the lanyard tab reaches above the top of the plate. */
+const TAB_EXTENSION_MM = SLOT_WIDTH_MM + 2 * TAB_WALL_MM - TAB_OVERLAP_MM
+
+/**
+ * Side of the QR square: the full width at text scale 1, shrinking by the
+ * extra height larger text takes.
+ */
+export function computeQrSideMm(
+  options: Pick<Qr3mfOptions, 'sizeMm' | 'textLines' | 'textScale'>,
+): number {
+  const scale = options.textScale ?? 1
+  return options.sizeMm - textBandHeightMm(options.textLines) * (scale - 1)
+}
+
+/** Largest scale at which the widest line still fits the plate's width. */
+function textFitScale(font: TextFont, lines: TextLine[], sizeMm: number): number {
+  const widest = Math.max(
+    ...lines.map((line) => font.advanceWidth(line.text, TEXT_EM_MM[line.size])),
+  )
+  return widest > 0 ? (sizeMm - 2 * TEXT_SIDE_MARGIN_MM) / widest : Infinity
+}
+
+/**
+ * Largest text scale for these options: the widest line must fit on one
+ * line, and the QR square it shrinks must stay at or above the scannable
+ * minimum. Never below 1; returns 1 when there is no text or no font.
+ */
+export function computeMaxTextScale(
+  text: string,
+  options: Pick<Qr3mfOptions, 'sizeMm' | 'quietZoneComponents' | 'textLines' | 'textFont'>,
+): number {
+  const lines = usableTextLines(options.textLines)
+  if (!options.textFont || lines.length === 0) return 1
+  const fit = textFitScale(options.textFont, lines, options.sizeMm)
+  const qrRoom = options.sizeMm - computeMinSizeMm(text, options.quietZoneComponents)
+  const qrLimit = 1 + Math.max(0, qrRoom) / textBandHeightMm(lines)
+  return Math.max(1, Math.min(fit, qrLimit))
+}
+
+/** Height of the whole tag: lanyard tab top to last text line bottom. */
+export function computeTotalHeightMm(
+  options: Pick<Qr3mfOptions, 'sizeMm' | 'lanyardLoop' | 'textLines'>,
+): number {
+  return (
+    options.sizeMm +
+    textBandHeightMm(options.textLines) +
+    (options.lanyardLoop ? TAB_EXTENSION_MM : 0)
+  )
+}
 
 /**
  * Error correction level for the printed code. The on-screen QR uses 'H' so
@@ -185,6 +265,27 @@ function addBox(
 }
 
 type Point = readonly [number, number]
+
+/**
+ * CCW outline of a rectangle from (x0, y0) to (x1, y1) with quarter-circle
+ * corners of radius `r`. The rectangle must be wider and taller than 2r.
+ */
+function roundedRectOutline(x0: number, y0: number, x1: number, y1: number, r: number): Point[] {
+  const corners: [number, number, number][] = [
+    [x1 - r, y0 + r, -Math.PI / 2], // bottom right
+    [x1 - r, y1 - r, 0], // top right
+    [x0 + r, y1 - r, Math.PI / 2], // top left
+    [x0 + r, y0 + r, Math.PI], // bottom left
+  ]
+  const points: Point[] = []
+  for (const [cx, cy, start] of corners) {
+    for (let i = 0; i <= CORNER_SEGMENTS; i++) {
+      const a = start + (Math.PI / 2) * (i / CORNER_SEGMENTS)
+      points.push([cx + r * Math.cos(a), cy + r * Math.sin(a)])
+    }
+  }
+  return points
+}
 
 /**
  * CCW outline of a stadium (pill) shape: a `length` x `width` rectangle with
@@ -277,21 +378,30 @@ export function buildQr3mfMeshes(
 ): { base: Mesh; qr: Mesh } {
   const { sizeMm, thicknessMm, lanyardLoop, quietZoneComponents, reliefMm } = options
 
+  // Text lines stack below the QR code, which sits in a square at the top
+  // (y in [0, qrSide]); the plate extends downward into negative y by the
+  // text bands. Larger text takes its extra height from the QR square, so
+  // the tag's outside size never changes with the text scale.
+  const lines = usableTextLines(options.textLines)
+  const textScale = options.textScale ?? 1
+  const textHeight = textBandHeightMm(lines) * textScale
+  const qrSide = computeQrSideMm(options)
+  const qrX = (sizeMm - qrSide) / 2
+
   const matrix = qrMatrix(text)
   const n = matrix.length
-  const pitch = sizeMm / (n + 2 * quietZoneComponents)
+  const pitch = qrSide / (n + 2 * quietZoneComponents)
   const margin = quietZoneComponents * pitch
 
-  // Text lines stack below the QR code. The QR keeps the top sizeMm x sizeMm
-  // square (y in [0, sizeMm]); the plate is extended downward into negative
-  // y by one band per line so the QR geometry and its tests are unchanged.
-  const lines = usableTextLines(options.textLines)
-  const textHeight = lines.length * TEXT_LINE_HEIGHT_MM
-
   const baseMesh: Mesh = { vertices: [], triangles: [] }
-  // Avoid -0 so a text-free plate is byte-identical to before.
+  // Avoid -0 so a text-free plate starts exactly at y=0.
   const plateBottomY = textHeight > 0 ? -textHeight : 0
-  addBox(baseMesh, 0, plateBottomY, 0, sizeMm, sizeMm, thicknessMm)
+  addExtrudedOutline(
+    baseMesh,
+    roundedRectOutline(0, plateBottomY, sizeMm, qrSide, CORNER_RADIUS_MM),
+    0,
+    thicknessMm,
+  )
 
   if (lanyardLoop) {
     const tabWidth = SLOT_WIDTH_MM + 2 * TAB_WALL_MM
@@ -299,7 +409,7 @@ export function buildQr3mfMeshes(
     // Centered on the top edge, sunk TAB_OVERLAP_MM into the plate. The
     // outer and inner stadiums share cap centers (equal length - width),
     // giving the ring extrusion its required 1:1 point correspondence.
-    const cy = sizeMm + tabWidth / 2 - TAB_OVERLAP_MM
+    const cy = qrSide + tabWidth / 2 - TAB_OVERLAP_MM
     const outer = stadiumOutline(sizeMm / 2, cy, tabLength, tabWidth)
     const inner = stadiumOutline(sizeMm / 2, cy, SLOT_LENGTH_MM, SLOT_WIDTH_MM)
     addRingExtrusion(baseMesh, outer, inner, 0, thicknessMm)
@@ -317,13 +427,13 @@ export function buildQr3mfMeshes(
       let end = c
       while (end < n && matrix[r][end]) end++
       // Row 0 is the top of the code, which is the highest y on the plate.
-      const yTop = sizeMm - margin - r * pitch
+      const yTop = qrSide - margin - r * pitch
       addBox(
         qrMesh,
-        margin + c * pitch,
+        qrX + margin + c * pitch,
         yTop - pitch,
         thicknessMm,
-        margin + end * pitch,
+        qrX + margin + end * pitch,
         yTop,
         thicknessMm + reliefMm,
       )
@@ -337,18 +447,23 @@ export function buildQr3mfMeshes(
   const font = options.textFont
   const align = options.textAlign ?? 'center'
   if (font && lines.length > 0) {
-    const widest = Math.max(...lines.map((line) => font.advanceWidth(line, 1)))
-    const em = Math.min(TEXT_EM_MM, (sizeMm - 2 * TEXT_SIDE_MARGIN_MM) / widest)
-    lines.forEach((line, index) => {
-      const width = font.advanceWidth(line, 1) * em
+    // Lines too wide for the plate at the requested scale shrink together,
+    // keeping their bands; computeMaxTextScale keeps the slider below that.
+    const fit = Math.min(1, textFitScale(font, lines, sizeMm) / textScale)
+    let bandTop = 0
+    lines.forEach((line) => {
+      const em = TEXT_EM_MM[line.size] * textScale * fit
+      const width = font.advanceWidth(line.text, em)
+      const band = bandHeight(line) * textScale
 
       // Center the span from descender to cap height inside the band.
-      const bandCenter = -(index + 0.5) * TEXT_LINE_HEIGHT_MM
+      const bandCenter = bandTop - band / 2
       const baseline = bandCenter - ((font.capHeight - font.descender) * em) / 2
+      bandTop -= band
 
       addTextRelief(
         qrMesh,
-        font.glyphContours(line, em),
+        font.glyphContours(line.text, em),
         align === 'left'
           ? TEXT_SIDE_MARGIN_MM
           : align === 'right'
@@ -409,6 +524,16 @@ export function generateQr3mf(
 
   if (usableTextLines(options.textLines).length > 0 && !options.textFont) {
     throw new Error('textFont is required when textLines are given')
+  }
+  const textScale = options.textScale ?? 1
+  if (!Number.isFinite(textScale) || textScale < 1) {
+    throw new RangeError(`textScale must be at least 1, got ${textScale}`)
+  }
+  const qrSide = computeQrSideMm(options)
+  if (qrSide < minSize) {
+    throw new RangeError(
+      `textScale ${textScale} shrinks the QR code to ${qrSide.toFixed(1)} mm, below the ${minSize} mm minimum`,
+    )
   }
 
   const { base: baseMesh, qr: qrMesh } = buildQr3mfMeshes(text, options)
