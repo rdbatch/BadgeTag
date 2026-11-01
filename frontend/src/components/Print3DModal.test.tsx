@@ -1,7 +1,10 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Print3DModal } from './Print3DModal'
 import {
+  BADGE_FIT,
   computeMinSizeMm,
+  computeQrSideMm,
+  computeTotalHeightMm,
   DEFAULT_QUIET_ZONE_COMPONENTS,
   generateQr3mf,
   QR3MF_LIMITS,
@@ -32,6 +35,7 @@ async function downloadWith(
   props: Partial<Parameters<typeof Print3DModal>[0]>,
   switches: RegExp[],
   alignment?: string,
+  textSizePercent?: string,
 ): Promise<Qr3mfOptions> {
   vi.mocked(generateQr3mf).mockClear()
   const createObjectURL = vi.fn(() => 'blob:mock')
@@ -39,9 +43,16 @@ async function downloadWith(
   const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
   try {
     const { unmount } = renderModal(props)
+    // Let the default URL line's font load finish first: overlapping
+    // dynamic imports of the mocked module can resolve to the real one.
+    await screen.findByRole('button', { name: 'Download .3mf' })
     for (const name of switches) fireEvent.click(screen.getByRole('switch', { name }))
     if (alignment) fireEvent.click(screen.getByRole('radio', { name: alignment }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Download .3mf' }))
+    const download = await screen.findByRole('button', { name: 'Download .3mf' })
+    if (textSizePercent) {
+      fireEvent.change(screen.getByLabelText('Text size'), { target: { value: textSizePercent } })
+    }
+    fireEvent.click(download)
     unmount()
     return vi.mocked(generateQr3mf).mock.calls[0][1]
   } finally {
@@ -105,11 +116,52 @@ describe('Print3DModal', () => {
     expect(slider).toHaveAttribute('max', String(QR3MF_LIMITS.maxSizeMm))
   })
 
+  it('defaults to the card-badge width, 52 x 81 mm with every text line on', () => {
+    renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+    expect(screen.getByLabelText('Size')).toHaveValue(String(BADGE_FIT.widthMm))
+
+    fireEvent.click(screen.getByRole('switch', { name: /^Name/ }))
+    fireEvent.click(screen.getByRole('switch', { name: /Pronouns/ }))
+    expect(screen.getByLabelText('Size')).toHaveValue(String(BADGE_FIT.widthMm))
+    expect(
+      screen.getByText(`${BADGE_FIT.widthMm} × ${BADGE_FIT.heightMm} mm`),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps the 52 mm width with no text lines, growing only in height with lines', () => {
+    renderModal()
+    fireEvent.click(screen.getByRole('switch', { name: /BadgeTag URL/ }))
+    expect(screen.getByLabelText('Size')).toHaveValue(String(BADGE_FIT.widthMm))
+    expect(screen.getByText(new RegExp(`^${BADGE_FIT.widthMm} × \\d+ mm$`))).toBeInTheDocument()
+  })
+
+  it('lets the size go above the card-badge size', () => {
+    renderModal({ displayName: 'Ada Lovelace', pronouns: 'she/her' })
+    fireEvent.click(screen.getByRole('switch', { name: /^Name/ }))
+    fireEvent.click(screen.getByRole('switch', { name: /Pronouns/ }))
+    fireEvent.change(screen.getByLabelText('Size'), { target: { value: '90' } })
+    expect(screen.getByLabelText('Size')).toHaveValue('90')
+  })
+
+  it('marks the card-badge width on the size slider and explains it', () => {
+    renderModal()
+    const url = `${window.location.origin}/p/${PROFILE_ID}`
+    const min = computeMinSizeMm(url, DEFAULT_QUIET_ZONE_COMPONENTS)
+    const fraction = (BADGE_FIT.widthMm - min) / (QR3MF_LIMITS.maxSizeMm - min)
+    const left = screen.getByTestId(`print3d-size-mark-${BADGE_FIT.widthMm}`).style.left
+    expect(Number(left.match(/8px \+ ([\d.]+) \*/)?.[1])).toBeCloseTo(fraction, 3)
+    expect(
+      screen.getByText(/52 × 82 mm fits alongside a standard card-sized conference badge/),
+    ).toBeInTheDocument()
+  })
+
   it('constrains the thickness slider to printable limits', () => {
     renderModal()
     const slider = screen.getByLabelText('Thickness')
     expect(slider).toHaveAttribute('min', String(QR3MF_LIMITS.minThicknessMm))
     expect(slider).toHaveAttribute('max', String(QR3MF_LIMITS.maxThicknessMm))
+    expect(QR3MF_LIMITS.maxThicknessMm).toBe(4)
+    expect(slider).toHaveValue('2')
   })
 
   it('constrains the quiet zone slider to the printable/scannable range', () => {
@@ -142,16 +194,22 @@ describe('Print3DModal', () => {
 
   it('updates the size readout when the slider moves', () => {
     renderModal()
-    fireEvent.change(screen.getByLabelText('Size'), { target: { value: '80' } })
-    expect(screen.getByText('80 × 80 mm')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Size'), { target: { value: '60' } })
+    // Width is the size; height adds the URL line band and the lanyard tab.
+    const height = computeTotalHeightMm({
+      sizeMm: 60,
+      lanyardLoop: true,
+      textLines: [{ text: 'x', size: 'small' }],
+    })
+    expect(screen.getByText(`60 × ${Math.round(height)} mm`)).toBeInTheDocument()
   })
 
   it('updates the thickness readout when the slider moves', () => {
     renderModal()
     fireEvent.change(screen.getByLabelText('Thickness'), {
-      target: { value: '4.2' },
+      target: { value: '3.4' },
     })
-    expect(screen.getByText('4.2 mm')).toBeInTheDocument()
+    expect(screen.getByText('3.4 mm')).toBeInTheDocument()
   })
 
   it('toggles the lanyard loop switch', () => {
@@ -296,13 +354,18 @@ describe('Print3DModal', () => {
 
     it('exports the custom URL as the URL line when a slug is saved', async () => {
       const options = await downloadWith({ slug: 'ada' }, [])
-      expect(options.textLines).toEqual([`${window.location.host}/@ada`])
+      expect(options.textLines).toEqual([
+        { text: `${window.location.host}/@ada`, size: 'small' },
+      ])
     })
 
     it('exports the /p/ URL without its scheme when there is no slug', async () => {
       const options = await downloadWith({}, [])
       expect(options.textLines).toEqual([
-        `${window.location.origin}/p/${PROFILE_ID}`.replace(/^https?:\/\//, ''),
+        {
+          text: `${window.location.origin}/p/${PROFILE_ID}`.replace(/^https?:\/\//, ''),
+          size: 'small',
+        },
       ])
     })
 
@@ -311,7 +374,50 @@ describe('Print3DModal', () => {
         { displayName: 'Ada Lovelace', pronouns: 'she/her' },
         [/Pronouns/, /^Name/],
       )
-      expect(options.textLines?.slice(1)).toEqual(['Ada Lovelace', 'she/her'])
+      // Name and pronouns are set large; the URL above them small.
+      expect(options.textLines?.map((l) => l.size)).toEqual(['small', 'large', 'large'])
+      expect(options.textLines?.slice(1).map((l) => l.text)).toEqual(['Ada Lovelace', 'she/her'])
+    })
+
+    it('recommends a 0.2mm nozzle and arachne walls at the top of the section', () => {
+      renderModal()
+      expect(screen.getByRole('group', { name: 'Text' })).toHaveTextContent(
+        '0.2mm nozzle and arachne wall generation recommended!',
+      )
+    })
+
+    it('shows the text size slider only while a text line is on', async () => {
+      renderModal()
+      expect(await screen.findByLabelText('Text size')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('switch', { name: /BadgeTag URL/ }))
+      expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+    })
+
+    it('caps the text size where the longest line fills the width', async () => {
+      renderModal({ displayName: 'Ada' })
+      await screen.findByRole('button', { name: 'Download .3mf' })
+      fireEvent.click(screen.getByRole('switch', { name: /BadgeTag URL/ }))
+      fireEvent.click(screen.getByRole('switch', { name: /^Name/ }))
+      const slider = screen.getByLabelText('Text size')
+      expect(slider).toBeEnabled()
+      expect(slider).toHaveAttribute('min', '100')
+      expect(Number(slider.getAttribute('max'))).toBeGreaterThan(100)
+      expect(slider).toHaveValue('100')
+      expect(screen.getByText('100%')).toBeInTheDocument()
+    })
+
+    it('disables the text size slider when the longest line already fills the width', async () => {
+      // The /p/ URL line is wider than a 52 mm tag at the default size.
+      renderModal()
+      await screen.findByRole('button', { name: 'Download .3mf' })
+      expect(screen.getByLabelText('Text size')).toBeDisabled()
+      expect(screen.getByText(/already fills the width/)).toBeInTheDocument()
+    })
+
+    it('exports the chosen text scale, which shrinks the QR square', async () => {
+      const options = await downloadWith({ displayName: 'Ada' }, [/BadgeTag URL/, /^Name/], undefined, '130')
+      expect(options.textScale).toBeCloseTo(1.3)
+      expect(computeQrSideMm(options)).toBeLessThan(options.sizeMm)
     })
 
     it('centers text by default and exports the chosen alignment', async () => {
