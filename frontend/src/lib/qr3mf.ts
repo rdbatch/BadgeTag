@@ -85,7 +85,7 @@ export const QR3MF_LIMITS = {
  * held vertically. A `sizeMm` of `widthMm` with the lanyard loop and all
  * three text lines (one small, two large) comes out exactly `heightMm` tall.
  */
-export const BADGE_FIT = { widthMm: 52, heightMm: 81 } as const
+export const BADGE_FIT = { widthMm: 52, heightMm: 82 } as const
 
 /** Default blank border around the code, in component widths. */
 export const DEFAULT_QUIET_ZONE_COMPONENTS = 1.5
@@ -123,6 +123,14 @@ function bandHeight(line: TextLine): number {
 /** Total extra plate height (mm) the given text lines require below the QR. */
 export function textBandHeightMm(textLines: TextLine[] | undefined): number {
   return usableTextLines(textLines).reduce((sum, line) => sum + bandHeight(line), 0)
+}
+
+/** Gap under the last text line, so the bottom edge doesn't crowd the text. */
+const TEXT_PANEL_BOTTOM_MARGIN_MM = 1
+
+/** The bottom margin, which applies only when there is text to sit above it. */
+function textPanelBottomMarginMm(textLines: TextLine[] | undefined): number {
+  return usableTextLines(textLines).length > 0 ? TEXT_PANEL_BOTTOM_MARGIN_MM : 0
 }
 
 /**
@@ -183,6 +191,7 @@ export function computeTotalHeightMm(
   return (
     options.sizeMm +
     textBandHeightMm(options.textLines) +
+    textPanelBottomMarginMm(options.textLines) +
     (options.lanyardLoop ? TAB_EXTENSION_MM : 0)
   )
 }
@@ -395,7 +404,7 @@ export function buildQr3mfMeshes(
 
   const baseMesh: Mesh = { vertices: [], triangles: [] }
   // Avoid -0 so a text-free plate starts exactly at y=0.
-  const plateBottomY = textHeight > 0 ? -textHeight : 0
+  const plateBottomY = -(textHeight + textPanelBottomMarginMm(lines))
   addExtrudedOutline(
     baseMesh,
     roundedRectOutline(0, plateBottomY, sizeMm, qrSide, CORNER_RADIUS_MM),

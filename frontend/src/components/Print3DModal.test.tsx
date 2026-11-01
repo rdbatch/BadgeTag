@@ -151,7 +151,7 @@ describe('Print3DModal', () => {
     const left = screen.getByTestId(`print3d-size-mark-${BADGE_FIT.widthMm}`).style.left
     expect(Number(left.match(/8px \+ ([\d.]+) \*/)?.[1])).toBeCloseTo(fraction, 3)
     expect(
-      screen.getByText(/52 × 81 mm fits alongside a standard card-sized conference badge/),
+      screen.getByText(/52 × 82 mm fits alongside a standard card-sized conference badge/),
     ).toBeInTheDocument()
   })
 

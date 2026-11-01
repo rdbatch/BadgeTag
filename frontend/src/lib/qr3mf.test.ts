@@ -371,7 +371,8 @@ describe('text lines below the QR code', () => {
     const lines = [small('badgetag.me/@ada'), large('Ada')]
     const { min, max } = yRange(buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines: lines }).base.vertices)
     expect(max).toBe(60)
-    expect(min).toBeCloseTo(-textBandHeightMm(lines))
+    // Bands plus the 1 mm gap under the last line.
+    expect(min).toBeCloseTo(-(textBandHeightMm(lines) + 1))
   })
 
   it('reserves the bands but draws no glyphs until a font is supplied', () => {
@@ -537,7 +538,7 @@ describe('card badge fit', () => {
     { text: 'she/her', size: 'large' },
   ]
 
-  it('comes out exactly 52 x 81 mm with the loop and all three lines', () => {
+  it('comes out exactly 52 x 82 mm with the loop and all three lines', () => {
     const options = { ...VALID_OPTIONS, sizeMm: BADGE_FIT.widthMm, textLines: allLines }
     expect(computeTotalHeightMm(options)).toBeCloseTo(BADGE_FIT.heightMm)
 
