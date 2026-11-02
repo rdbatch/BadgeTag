@@ -208,6 +208,7 @@ export default function Print3DPreview({ profileUrl, options }: Print3DPreviewPr
     ctx.model.add(
       new THREE.Mesh(baseGeometry, ctx.baseMaterial),
       new THREE.Mesh(toGeometry(meshes.qr), ctx.qrMaterial),
+      ...meshes.text.map((part) => new THREE.Mesh(toGeometry(part.mesh), ctx.qrMaterial)),
     )
 
     // Center the whole tag (text bands and lanyard tab included) on the
