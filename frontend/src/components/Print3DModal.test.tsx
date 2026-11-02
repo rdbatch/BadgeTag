@@ -355,7 +355,7 @@ describe('Print3DModal', () => {
     it('exports the custom URL as the URL line when a slug is saved', async () => {
       const options = await downloadWith({ slug: 'ada' }, [])
       expect(options.textLines).toEqual([
-        { text: `${window.location.host}/@ada`, size: 'small' },
+        { text: `${window.location.host}/@ada`, size: 'small', label: 'URL' },
       ])
     })
 
@@ -365,6 +365,7 @@ describe('Print3DModal', () => {
         {
           text: `${window.location.origin}/p/${PROFILE_ID}`.replace(/^https?:\/\//, ''),
           size: 'small',
+          label: 'URL',
         },
       ])
     })

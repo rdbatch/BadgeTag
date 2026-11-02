@@ -88,9 +88,10 @@ export function Print3DModal({
 
   const textLines = useMemo(() => {
     const lines: TextLine[] = []
-    if (showUrlLine) lines.push({ text: urlLineText, size: 'small' })
-    if (showNameLine && trimmedName) lines.push({ text: trimmedName, size: 'large' })
-    if (showPronounsLine && trimmedPronouns) lines.push({ text: trimmedPronouns, size: 'large' })
+    if (showUrlLine) lines.push({ text: urlLineText, size: 'small', label: 'URL' })
+    if (showNameLine && trimmedName) lines.push({ text: trimmedName, size: 'large', label: 'Name' })
+    if (showPronounsLine && trimmedPronouns)
+      lines.push({ text: trimmedPronouns, size: 'large', label: 'Pronouns' })
     return lines
   }, [
     showUrlLine,
