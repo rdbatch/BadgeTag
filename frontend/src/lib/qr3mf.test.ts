@@ -326,24 +326,17 @@ describe('text lines below the QR code', () => {
     return { min, max }
   }
 
-  /** Vertices the text added to the dark part, beyond the bare QR code. */
+  /** Vertices of every text object, flattened: each line is its own mesh now. */
   function textVertices(textLines: TextLine[], extra: Partial<Qr3mfOptions> = {}) {
-    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
-    const { qr } = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines, textFont: FONT, ...extra })
-    return qr.vertices.slice(plain.qr.vertices.length)
+    const { text } = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines, textFont: FONT, ...extra })
+    return text.flatMap((part) => part.mesh.vertices)
   }
 
-  /** Height of the ink in each band, top to bottom. */
+  /** Height of the ink in each text object, top to bottom. */
   function inkHeights(textLines: TextLine[]) {
-    const added = textVertices(textLines)
-    let top = 0
-    return textLines.map((line) => {
-      const bottom = top - textBandHeightMm([line])
-      const ys: number[] = []
-      for (let i = 1; i < added.length; i += 3) {
-        if (added[i] <= top && added[i] > bottom) ys.push(added[i])
-      }
-      top = bottom
+    const { text } = buildQr3mfMeshes(TEST_URL, { ...NO_LOOP, textLines, textFont: FONT })
+    return text.map(({ mesh }) => {
+      const ys = mesh.vertices.filter((_, i) => i % 3 === 1)
       return Math.max(...ys) - Math.min(...ys)
     })
   }
@@ -433,7 +426,7 @@ describe('text lines below the QR code', () => {
   })
 
   it('keeps both parts watertight with text present', () => {
-    const { base, qr } = buildQr3mfMeshes(TEST_URL, {
+    const { base, qr, text } = buildQr3mfMeshes(TEST_URL, {
       ...VALID_OPTIONS,
       sizeMm: BADGE_FIT.widthMm,
       textLines: [small('badgetag.me/@ada'), large('Ada Lovelace'), large('she/her')],
@@ -441,13 +434,51 @@ describe('text lines below the QR code', () => {
     })
     expect(openEdgeCount(base)).toBe(0)
     expect(openEdgeCount(qr)).toBe(0)
+    expect(text).toHaveLength(3)
+    for (const part of text) expect(openEdgeCount(part.mesh)).toBe(0)
   })
 
   it('requires a font to export text lines', () => {
     const textLines = [large('Ada')]
     expect(() => generateQr3mf(TEST_URL, { ...NO_LOOP, textLines })).toThrow(/textFont/)
     const { objects } = parseModel(generateQr3mf(TEST_URL, { ...NO_LOOP, textLines, textFont: FONT }))
-    expect(objects.map((o) => o.name)).toEqual(['Base plate', 'QR code'])
+    expect(objects.map((o) => o.name)).toEqual(['Base plate', 'QR code', 'Text 1'])
+  })
+
+  it('exports each text line as its own colorable object in the build', () => {
+    // Read the names, materials and build items straight from the XML: the
+    // full DOM parse of the dense QR object is too slow for a test to repeat.
+    const xml = strFromU8(
+      unzipSync(
+        generateQr3mf(TEST_URL, {
+          ...NO_LOOP,
+          textLines: [
+            { text: 'badgetag.me/@ada', size: 'small', label: 'URL' },
+            { text: 'Ada Lovelace', size: 'large', label: 'Name' },
+            { text: 'she/her', size: 'large', label: 'Pronouns' },
+          ],
+          textFont: FONT,
+        }),
+      )['3D/3dmodel.model'],
+    )
+    const names = [...xml.matchAll(/<object [^>]*name="([^"]*)"/g)].map((m) => m[1])
+    expect(names).toEqual(['Base plate', 'QR code', 'Text: URL', 'Text: Name', 'Text: Pronouns'])
+    // Every object is in the build, so slicers import each as a separate part.
+    expect([...xml.matchAll(/<item /g)]).toHaveLength(5)
+    // The base is material 0; the QR code and every text line share material 1.
+    const pindexes = [...xml.matchAll(/<object [^>]*pindex="(\d)"/g)].map((m) => m[1])
+    expect(pindexes).toEqual(['0', '1', '1', '1', '1'])
+  }, 20000)
+
+  it('keeps the QR code free of text geometry', () => {
+    const plain = buildQr3mfMeshes(TEST_URL, NO_LOOP)
+    const withText = buildQr3mfMeshes(TEST_URL, {
+      ...NO_LOOP,
+      textLines: [large('Ada Lovelace')],
+      textFont: FONT,
+    })
+    expect(withText.qr.vertices).toEqual(plain.qr.vertices)
+    expect(withText.text[0].mesh.vertices.length).toBeGreaterThan(0)
   })
 })
 
@@ -486,9 +517,8 @@ describe('text scale', () => {
 
   it('grows the text with the scale', () => {
     const inkHeight = (textScale: number) => {
-      const plain = buildQr3mfMeshes(TEST_URL, { ...base, textScale, textFont: undefined })
-      const full = buildQr3mfMeshes(TEST_URL, { ...base, textScale })
-      return bounds(full.qr.vertices.slice(plain.qr.vertices.length), 1)
+      const { text } = buildQr3mfMeshes(TEST_URL, { ...base, textScale })
+      return bounds(text.flatMap((part) => part.mesh.vertices), 1)
     }
     const small = inkHeight(1)
     const big = inkHeight(1.3)
@@ -518,9 +548,10 @@ describe('text scale', () => {
   })
 
   it('stays watertight when scaled up', () => {
-    const { base: plate, qr } = buildQr3mfMeshes(TEST_URL, { ...base, textScale: 1.4 })
+    const { base: plate, qr, text } = buildQr3mfMeshes(TEST_URL, { ...base, textScale: 1.4 })
     expect(openEdgeCount(plate)).toBe(0)
     expect(openEdgeCount(qr)).toBe(0)
+    for (const part of text) expect(openEdgeCount(part.mesh)).toBe(0)
   })
 
   it('rejects scales below 1 or that shrink the QR code past its minimum', () => {

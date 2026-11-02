@@ -56,6 +56,27 @@ export interface TextLine {
   text: string
   /** `small` for supporting text like the URL, `large` for name and pronouns. */
   size: 'small' | 'large'
+  /** Name shown for this line's object in the 3MF file, e.g. "URL". */
+  label?: string
+}
+
+/** One text line's raised relief, as its own object in the 3MF file. */
+export interface TextMesh {
+  name: string
+  mesh: Mesh
+}
+
+/** Object name for a text line: its label if it has one, else its position. */
+function textObjectName(line: TextLine, index: number): string {
+  return line.label ? `Text: ${line.label}` : `Text ${index + 1}`
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 export const QR3MF_LIMITS = {
@@ -384,7 +405,7 @@ function meshXml(mesh: Mesh): string {
 export function buildQr3mfMeshes(
   text: string,
   options: Qr3mfOptions,
-): { base: Mesh; qr: Mesh } {
+): { base: Mesh; qr: Mesh; text: TextMesh[] } {
   const { sizeMm, thicknessMm, lanyardLoop, quietZoneComponents, reliefMm } = options
 
   // Text lines stack below the QR code, which sits in a square at the top
@@ -455,12 +476,14 @@ export function buildQr3mfMeshes(
   // in its band and aligned horizontally per `textAlign`.
   const font = options.textFont
   const align = options.textAlign ?? 'center'
+  // One mesh per text line, so each line can be colored on its own.
+  const textMeshes: Mesh[] = lines.map(() => ({ vertices: [], triangles: [] }))
   if (font && lines.length > 0) {
     // Lines too wide for the plate at the requested scale shrink together,
     // keeping their bands; computeMaxTextScale keeps the slider below that.
     const fit = Math.min(1, textFitScale(font, lines, sizeMm) / textScale)
     let bandTop = 0
-    lines.forEach((line) => {
+    lines.forEach((line, index) => {
       const em = TEXT_EM_MM[line.size] * textScale * fit
       const width = font.advanceWidth(line.text, em)
       const band = bandHeight(line) * textScale
@@ -471,7 +494,7 @@ export function buildQr3mfMeshes(
       bandTop -= band
 
       addTextRelief(
-        qrMesh,
+        textMeshes[index],
         font.glyphContours(line.text, em),
         align === 'left'
           ? TEXT_SIDE_MARGIN_MM
@@ -485,7 +508,11 @@ export function buildQr3mfMeshes(
     })
   }
 
-  return { base: baseMesh, qr: qrMesh }
+  const textParts = lines.map((line, index) => ({
+    name: textObjectName(line, index),
+    mesh: textMeshes[index],
+  }))
+  return { base: baseMesh, qr: qrMesh, text: textParts }
 }
 
 /**
@@ -545,7 +572,18 @@ export function generateQr3mf(
     )
   }
 
-  const { base: baseMesh, qr: qrMesh } = buildQr3mfMeshes(text, options)
+  const { base: baseMesh, qr: qrMesh, text: textParts } = buildQr3mfMeshes(text, options)
+  // Every text line is its own object after the base plate and QR code, so a
+  // slicer can assign each one a color.
+  const textXml = textParts
+    .map(
+      (part, i) =>
+        `<object id="${4 + i}" type="model" name="${escapeXml(part.name)}" pid="1" pindex="1">${meshXml(part.mesh)}</object>`,
+    )
+    .join('')
+  const buildItems = [2, 3, ...textParts.map((_, i) => 4 + i)]
+    .map((id) => `<item objectid="${id}" />`)
+    .join('')
 
   const model =
     `<?xml version="1.0" encoding="UTF-8"?>` +
@@ -558,8 +596,9 @@ export function generateQr3mf(
     `</basematerials>` +
     `<object id="2" type="model" name="Base plate" pid="1" pindex="0">${meshXml(baseMesh)}</object>` +
     `<object id="3" type="model" name="QR code" pid="1" pindex="1">${meshXml(qrMesh)}</object>` +
+    textXml +
     `</resources>` +
-    `<build><item objectid="2" /><item objectid="3" /></build>` +
+    `<build>${buildItems}</build>` +
     `</model>`
 
   const contentTypes =
