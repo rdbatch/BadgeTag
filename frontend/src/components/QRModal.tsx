@@ -12,37 +12,43 @@ import { useOverlayClose } from '../hooks/useOverlayClose'
 const QR_EXPORT_SIZE = 1024
 
 /**
- * Deliver a rendered PNG to the user. On mobile browsers that support sharing
- * files (iOS Safari, Android Chrome), open the native share sheet so the user
- * can tap "Save Image" / "Save to Photos" — the closest a web app can get to
- * saving straight to the camera roll, since browsers have no direct photo
- * library write access. Everywhere else (and if the user cancels or sharing
- * fails) fall back to a normal file download.
+ * Whether this browser can share a PNG file via the native share sheet — true
+ * on mobile browsers that implement the Web Share API with file support (iOS
+ * Safari, Android Chrome), false on desktop. Drives whether the "Share" button
+ * is rendered at all. Probed with a tiny dummy PNG file so `canShare` sees the
+ * same shape the real share call uses.
  */
-async function deliverPng(blob: Blob, filename: string): Promise<void> {
-  const file = new File([blob], filename, { type: 'image/png' })
-
+function canSharePng(): boolean {
   const nav = navigator as Navigator & {
     canShare?: (data?: ShareData) => boolean
   }
-  const canShareFile =
-    typeof nav.share === 'function' &&
-    typeof nav.canShare === 'function' &&
-    nav.canShare({ files: [file] })
-
-  if (canShareFile) {
-    try {
-      await nav.share({ files: [file], title: filename })
-      return
-    } catch (err) {
-      // AbortError = user dismissed the share sheet; don't then force a
-      // download behind their back. Any other failure falls through to the
-      // download so the user still gets their file.
-      if (err instanceof DOMException && err.name === 'AbortError') return
-    }
+  if (typeof nav.share !== 'function' || typeof nav.canShare !== 'function') {
+    return false
   }
+  try {
+    const probe = new File([''], 'probe.png', { type: 'image/png' })
+    return nav.canShare({ files: [probe] })
+  } catch {
+    return false
+  }
+}
 
-  downloadBlob(blob, filename)
+/**
+ * Open the native share sheet with the rendered PNG so the user can tap "Save
+ * Image" / "Save to Photos" — the closest a web app can get to saving straight
+ * to the camera roll, since browsers have no direct photo library write
+ * access. A dismissed sheet (AbortError) is a no-op; only call this when
+ * canSharePng() is true.
+ */
+async function sharePng(blob: Blob, filename: string): Promise<void> {
+  const file = new File([blob], filename, { type: 'image/png' })
+  try {
+    await navigator.share({ files: [file], title: filename })
+  } catch (err) {
+    // AbortError = user dismissed the sheet; anything else we swallow too,
+    // since the download button is the always-available path.
+    if (err instanceof DOMException && err.name === 'AbortError') return
+  }
 }
 
 /** Trigger a classic browser file download of a blob. */
@@ -132,7 +138,11 @@ export function QRModal({
     }
   }, [isOpen, onClose])
 
-  const handleDownload = useCallback(() => {
+  // Renders the QR code (plus caption and optional photo) to a high-res PNG
+  // blob off-screen, then hands it to `deliver` — either the file download or
+  // the share sheet. Both action buttons share this one render pipeline so the
+  // exported image is identical whichever path the user takes.
+  const renderQrPng = useCallback((deliver: (blob: Blob) => void) => {
     const svg = document.getElementById('qr-code-svg')
     if (!svg) return
 
@@ -229,10 +239,26 @@ export function QRModal({
     function exportCanvas(c: HTMLCanvasElement) {
       c.toBlob((blob) => {
         if (!blob) return
-        void deliverPng(blob, `badgetag-${profileId}.png`)
+        deliver(blob)
       }, 'image/png')
     }
-  }, [profileId, showPhoto, imageUrl, qrLabel])
+  }, [showPhoto, imageUrl, qrLabel])
+
+  const filename = `badgetag-${profileId}.png`
+
+  const handleDownload = useCallback(() => {
+    renderQrPng((blob) => downloadBlob(blob, filename))
+  }, [renderQrPng, filename])
+
+  const handleShare = useCallback(() => {
+    renderQrPng((blob) => {
+      void sharePng(blob, filename)
+    })
+  }, [renderQrPng, filename])
+
+  // Whether the native share sheet is available. Computed once when the modal
+  // opens; it never changes within a session, so there's no need to re-probe.
+  const [canShare] = useState(canSharePng)
 
   const overlayClose = useOverlayClose(onClose)
 
@@ -330,6 +356,16 @@ export function QRModal({
           >
             Download QR
           </button>
+          {/* Share only appears on mobile browsers that can share a file —
+              it opens the native share sheet where "Save to Photos" lives. */}
+          {canShare && (
+            <button
+              onClick={handleShare}
+              className="flex-1 rounded-lg border border-blue-600 px-4 py-2.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-50"
+            >
+              Share
+            </button>
+          )}
           <button
             onClick={() => {
               navigator.clipboard.writeText(profileUrl)

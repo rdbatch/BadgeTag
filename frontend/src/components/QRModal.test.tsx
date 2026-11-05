@@ -313,7 +313,13 @@ describe('QRModal', () => {
       vi.unstubAllGlobals()
     })
 
-    it('uses the Web Share API with a file when available (mobile save-to-photos path)', async () => {
+    it('does not render the Share button when file sharing is unavailable (desktop)', () => {
+      // jsdom has no navigator.share/canShare by default — desktop behavior.
+      render(<QRModal {...defaultProps} />)
+      expect(screen.queryByText('Share')).not.toBeInTheDocument()
+    })
+
+    it('download button always downloads a file and never calls share, even when sharing is available', async () => {
       const user = userEvent.setup()
 
       const mockSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
@@ -330,11 +336,14 @@ describe('QRModal', () => {
       HTMLCanvasElement.prototype.toBlob = vi.fn((cb: BlobCallback) => cb(blob)) as unknown as typeof HTMLCanvasElement.prototype.toBlob
 
       const shareMock = vi.fn().mockResolvedValue(undefined)
-      const canShareMock = vi.fn().mockReturnValue(true)
       Object.defineProperty(navigator, 'share', { value: shareMock, writable: true, configurable: true })
-      Object.defineProperty(navigator, 'canShare', { value: canShareMock, writable: true, configurable: true })
+      Object.defineProperty(navigator, 'canShare', { value: vi.fn().mockReturnValue(true), writable: true, configurable: true })
 
-      // Capture the single Image so we can fire its onload.
+      // Spy on the anchor click that drives the classic download.
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+      const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x')
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
       const images: Array<{ onload: (() => void) | null }> = []
       vi.stubGlobal('Image', class {
         onload: (() => void) | null = null
@@ -348,11 +357,59 @@ describe('QRModal', () => {
       render(<QRModal {...defaultProps} />)
       await user.click(screen.getByText('Download QR'))
       images[0].onload?.()
-      // Allow the async deliverPng promise chain to settle.
+
+      expect(clickSpy).toHaveBeenCalled()
+      expect(createUrlSpy).toHaveBeenCalledWith(blob)
+      expect(shareMock).not.toHaveBeenCalled()
+
+      // @ts-expect-error cleanup
+      delete navigator.share
+      // @ts-expect-error cleanup
+      delete navigator.canShare
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    it('renders the Share button and opens the share sheet with a file when sharing is available', async () => {
+      const user = userEvent.setup()
+
+      const mockSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      vi.spyOn(document, 'getElementById').mockReturnValue(mockSvg)
+
+      const blob = new Blob(['x'], { type: 'image/png' })
+      const mockCtx = {
+        fillStyle: '', font: '', textAlign: '', textBaseline: '',
+        fillRect: vi.fn(), fillText: vi.fn(), drawImage: vi.fn(),
+        beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), clip: vi.fn(),
+        save: vi.fn(), restore: vi.fn(),
+      }
+      HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue(mockCtx) as unknown as typeof HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.toBlob = vi.fn((cb: BlobCallback) => cb(blob)) as unknown as typeof HTMLCanvasElement.prototype.toBlob
+
+      const shareMock = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'share', { value: shareMock, writable: true, configurable: true })
+      Object.defineProperty(navigator, 'canShare', { value: vi.fn().mockReturnValue(true), writable: true, configurable: true })
+
+      const images: Array<{ onload: (() => void) | null }> = []
+      vi.stubGlobal('Image', class {
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        src = ''
+        width = 220
+        height = 220
+        constructor() { images.push(this) }
+      })
+
+      render(<QRModal {...defaultProps} />)
+
+      const shareBtn = screen.getByText('Share')
+      expect(shareBtn).toBeInTheDocument()
+
+      await user.click(shareBtn)
+      images[0].onload?.()
       await Promise.resolve()
       await Promise.resolve()
 
-      expect(canShareMock).toHaveBeenCalled()
       expect(shareMock).toHaveBeenCalledWith(
         expect.objectContaining({ files: expect.any(Array) }),
       )
