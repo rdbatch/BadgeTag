@@ -354,7 +354,7 @@ export function QRModal({
             onClick={handleDownload}
             className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
           >
-            Download QR
+            Download
           </button>
           {/* Share only appears on mobile browsers that can share a file —
               it opens the native share sheet where "Save to Photos" lives. */}
