@@ -19,6 +19,19 @@ const MOCK_ACCESS_TOKEN = 'mock-access-token'
 const MOCK_REFRESH_TOKEN = 'mock-refresh-token'
 const MOCK_PROFILE_ID = 'mockprofile01'
 
+/**
+ * In mock mode the signed-in sample user (Ada) stands in for the real
+ * admin. ryan@rdbatch.dev doesn't exist locally, so Ada is the sole admin
+ * here — matching the real backend's `ADMIN_EMAILS` allowlist decision,
+ * just with a different single entry.
+ */
+const MOCK_ADMIN_EMAILS = ['ada@example.com']
+
+function isMockAdmin(email: string | undefined): boolean {
+  if (!email) return false
+  return MOCK_ADMIN_EMAILS.includes(email.toLowerCase())
+}
+
 /** Profile in the API's wire format (snake_case), as the pages consume it. */
 interface StoredProfile {
   id: string
@@ -69,6 +82,102 @@ interface MockStore {
    * passkey) against this mock — only ever the first-time signup flow.
    */
   confirmedEmails: string[]
+}
+
+/**
+ * Extra read-only profiles that exist only to populate the admin "all
+ * profiles" view locally, so the search/table/QR/3MF flows have more than
+ * one row to exercise. They are never editable through the single-profile
+ * endpoints (those only ever touch the signed-in user's own `profile`);
+ * the admin scan simply returns these alongside it.
+ */
+const MOCK_ADMIN_EXTRA_PROFILES: StoredProfile[] = [
+  {
+    id: 'demograce01',
+    email: 'grace@example.com',
+    slug: 'grace',
+    display_name: 'Grace Hopper',
+    pronouns: 'she/her',
+    tagline: 'Rear Admiral, compiler pioneer',
+    location: 'Arlington, VA',
+    theme: 'slate',
+    display_email: true,
+    view_count: 128,
+    links: [
+      { platform: 'github', url: 'https://github.com/gracehopper' },
+      { platform: 'website', url: 'https://example.com/grace' },
+    ],
+  },
+  {
+    id: 'demoalan001',
+    email: 'alan@example.com',
+    display_name: 'Alan Turing',
+    tagline: 'On computable numbers',
+    location: 'Manchester, UK',
+    theme: 'forest',
+    display_email: false,
+    view_count: 342,
+    links: [{ platform: 'website', url: 'https://example.com/turing' }],
+  },
+  {
+    id: 'demokatherine',
+    email: 'katherine@example.com',
+    slug: 'katherine',
+    display_name: 'Katherine Johnson',
+    pronouns: 'she/her',
+    tagline: 'Orbital mechanics',
+    location: 'Hampton, VA',
+    theme: 'ocean',
+    display_email: true,
+    view_count: 57,
+    links: [{ platform: 'linkedin', url: 'https://linkedin.com/in/katherinejohnson' }],
+  },
+  {
+    id: 'demolinus01',
+    email: 'linus@example.com',
+    slug: 'linus',
+    display_name: 'Linus Torvalds',
+    pronouns: 'he/him',
+    tagline: 'Just a hobby, won’t be big',
+    location: 'Portland, OR',
+    theme: 'dark',
+    display_email: true,
+    view_count: 999,
+    links: [
+      { platform: 'github', url: 'https://github.com/torvalds' },
+      { platform: 'mastodon', url: 'https://mastodon.social/@torvalds' },
+    ],
+  },
+]
+
+/**
+ * Builds the admin "all profiles" rows from the signed-in user's own
+ * profile plus the seeded extras. Mirrors the backend's `AdminUser`
+ * summary shape (snake_case, newest-ish ordering not important for the
+ * mock) and includes every email regardless of `display_email`, since the
+ * real endpoint is a server-authorized admin view.
+ */
+function buildAdminUserRows(store: MockStore): Array<{
+  id: string
+  email?: string
+  slug?: string
+  display_name?: string
+  pronouns?: string
+  image_url?: string
+  view_count?: number
+  created_at: string
+}> {
+  const rows = store.profile ? [store.profile, ...MOCK_ADMIN_EXTRA_PROFILES] : [...MOCK_ADMIN_EXTRA_PROFILES]
+  return rows.map((p) => ({
+    id: p.id,
+    email: p.email,
+    slug: p.slug,
+    display_name: p.display_name,
+    pronouns: p.pronouns,
+    image_url: p.image_url,
+    view_count: p.view_count,
+    created_at: '2026-01-01T00:00:00Z',
+  }))
 }
 
 function readStore(): MockStore {
@@ -337,6 +446,8 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
   const publicMatch = pathname.match(/^\/api\/profile\/([^/]+)$/)
   if (method === 'GET' && publicMatch && publicMatch[1] !== 'me') {
     const requested = publicMatch[1]
+
+    // The signed-in user's own (editable) profile — view counts persist.
     const existing = store.profile
     const matchesProfile =
       existing !== null &&
@@ -347,6 +458,19 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       writeStore({ ...store, profile: viewed })
       return json(viewed)
     }
+
+    // The seeded read-only extras are also real public cards, so the
+    // admin page's Profile link (and the /p/{id} a QR encodes) resolves
+    // for them too. They aren't persisted, so no view-count bump here.
+    const extra = MOCK_ADMIN_EXTRA_PROFILES.find(
+      (p) =>
+        requested === p.id ||
+        (requested.startsWith('@') && requested.slice(1) === p.slug),
+    )
+    if (extra) {
+      return json(extra)
+    }
+
     return json({ message: 'Not found' }, 404)
   }
 
@@ -355,7 +479,20 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
   }
 
   if (method === 'GET' && pathname === '/api/profile/me') {
-    return store.profile ? json(store.profile) : json({ message: 'Not found' }, 404)
+    if (!store.profile) return json({ message: 'Not found' }, 404)
+    // Mirror the real backend: /me carries an is_admin flag the frontend
+    // uses to reveal the admin UI. In mock mode the seeded sample user
+    // (Ada) is the sole admin.
+    return json({ ...store.profile, is_admin: isMockAdmin(store.profile.email) })
+  }
+
+  // Admin-only list of all profiles. Mirrors the backend's server-side
+  // allowlist gate: 403 unless the signed-in sample user is the mock admin.
+  if (method === 'GET' && pathname === '/api/profile/admin/users') {
+    if (!isMockAdmin(store.profile?.email)) {
+      return json({ error: 'Forbidden' }, 403)
+    }
+    return json(buildAdminUserRows(store))
   }
 
   if (method === 'PUT' && pathname === '/api/profile') {

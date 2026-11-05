@@ -1,0 +1,5 @@
+{
+  "_comment": "Emails allowed to use the admin-only endpoints (the read-only 'all profiles' view and the is_admin flag on GET /api/profile/me), per environment. Read at synth time by infra/bin/app.ts and passed to ApiStack as the ADMIN_EMAILS Lambda env var, so a deploy picks it up with no --context flag and no workflow change. An environment missing from this file (or an empty array) means nobody is an admin there (fail closed). The admin decision is always made server-side against the verified JWT email; this list never reaches the frontend.",
+  "dev": ["ryan@rdbatch.dev"],
+  "prod": ["ryan@rdbatch.dev"]
+}

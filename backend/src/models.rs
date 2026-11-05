@@ -242,6 +242,65 @@ impl Profile {
         public.view_count = None;
         public
     }
+
+    /// Returns the compact summary row used by the admin "list all
+    /// profiles" view. Carries exactly the fields that view needs to
+    /// render a searchable table and open the QR/3MF generators for any
+    /// profile — never the full record (no links, theme, or timestamps),
+    /// and the email is included unconditionally because this is an
+    /// admin-only, server-authorized view (unlike `to_public`, which
+    /// honors `display_email`).
+    pub fn to_admin_summary(&self) -> AdminUser {
+        AdminUser {
+            id: self.id.clone(),
+            email: self.email.clone(),
+            slug: self.slug.clone(),
+            display_name: self.display_name.clone(),
+            pronouns: self.pronouns.clone(),
+            image_url: self.image_url.clone(),
+            view_count: self.view_count,
+            created_at: self.created_at.clone(),
+        }
+    }
+}
+
+/// A single row in the admin "list all profiles" response.
+///
+/// Deliberately minimal: just what the admin table renders (identity,
+/// searchable text, avatar, a view-count stat) plus the fields the QR and
+/// 3MF generators derive their output from (`id`, `slug`, `display_name`,
+/// `pronouns`). Served only from the admin-only, allowlist-gated endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminUser {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pronouns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view_count: Option<i64>,
+    pub created_at: String,
+}
+
+/// Response body for `GET /api/profile/me` — the caller's own profile plus
+/// an `is_admin` flag telling the frontend whether to reveal the admin UI.
+///
+/// The flag is computed server-side from the verified JWT email against
+/// the `ADMIN_EMAILS` allowlist, so the frontend never holds the admin
+/// list itself; it only mirrors this decision. The flattened `profile`
+/// keeps the wire shape backward-compatible — every existing field stays
+/// at the top level, with `is_admin` added alongside.
+#[derive(Debug, Clone, Serialize)]
+pub struct OwnProfileResponse {
+    #[serde(flatten)]
+    pub profile: Profile,
+    pub is_admin: bool,
 }
 
 /// Request body for creating/updating a profile

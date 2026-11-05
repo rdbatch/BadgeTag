@@ -58,6 +58,16 @@ export interface ApiStackProps extends cdk.StackProps {
    * @default - no custom domain yet, og:url/og:image are omitted
    */
   readonly siteUrl?: string;
+  /**
+   * Emails allowed to use the admin-only endpoints (the read-only
+   * "list all profiles" view at `/api/profile/admin/users`, and the
+   * `is_admin` flag on `GET /api/profile/me`). Passed to the Lambda as the
+   * comma-separated `ADMIN_EMAILS` env var. The admin decision is made
+   * server-side against the verified JWT email, never in the frontend.
+   *
+   * @default - empty; nobody is an admin (fail closed)
+   */
+  readonly adminEmails?: string[];
 }
 
 /**
@@ -139,6 +149,9 @@ export class ApiStack extends cdk.Stack {
         USER_POOL_ID: userPoolId,
         USER_POOL_CLIENT_ID: userPoolClientId,
         SITE_URL: props.siteUrl ?? "",
+        // Comma-separated admin allowlist. Empty means nobody is an admin,
+        // so the admin endpoints fail closed (403) when unconfigured.
+        ADMIN_EMAILS: (props.adminEmails ?? []).join(","),
       },
     });
 
@@ -282,6 +295,17 @@ export class ApiStack extends cdk.Stack {
     // readability, to mirror the Lambda-side router's match-arm order.
     httpApi.addRoutes({
       path: "/api/profile/me",
+      methods: [apigwv2.HttpMethod.GET],
+      integration,
+    });
+
+    // Admin-only read of all profiles. Declared before the parameterized
+    // /api/profile/{id} route for readability; HTTP API matching prefers
+    // the more specific literal path regardless of declaration order. The
+    // Lambda enforces the admin allowlist (403 for non-admins) — this route
+    // is not otherwise access-controlled at the gateway.
+    httpApi.addRoutes({
+      path: "/api/profile/admin/users",
       methods: [apigwv2.HttpMethod.GET],
       integration,
     });

@@ -71,6 +71,10 @@ export function EditProfilePage() {
   const [showPasskeyModal, setShowPasskeyModal] = useState(false)
   const [profileId, setProfileId] = useState('')
   const [viewCount, setViewCount] = useState<number | null>(null)
+  // Set from the server-computed `is_admin` flag on /api/profile/me. Only
+  // used to reveal the admin menu item below — the admin page and its data
+  // are independently gated server-side.
+  const [isAdmin, setIsAdmin] = useState(false)
   const [openPlatformIndex, setOpenPlatformIndex] = useState<number | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -107,6 +111,7 @@ export function EditProfilePage() {
         if (res.ok) {
           const data = await res.json()
           setProfileId(data.id)
+          setIsAdmin(Boolean(data.is_admin))
           setViewCount(data.view_count ?? 0)
           setSlug(data.slug ?? '')
           setInitialSlug(data.slug ?? '')
@@ -420,6 +425,16 @@ export function EditProfilePage() {
                 onClick: () => window.open(`/p/${profileId}`, '_blank'),
                 disabled: !profileId,
               },
+              // Admin-only. The flag is server-computed; a non-admin never
+              // sees this entry, and the /admin route guards itself anyway.
+              ...(isAdmin
+                ? [
+                    {
+                      label: 'Admin',
+                      onClick: () => navigate('/admin'),
+                    },
+                  ]
+                : []),
               {
                 label: 'Import from vCard',
                 onClick: () => vcardInputRef.current?.click(),
