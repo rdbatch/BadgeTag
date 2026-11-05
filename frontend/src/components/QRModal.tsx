@@ -2,6 +2,59 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import QRCode from 'react-qr-code'
 import { useOverlayClose } from '../hooks/useOverlayClose'
 
+/**
+ * Pixel size the QR code is rasterized to when exported, independent of the
+ * small on-screen preview. The code is a vector SVG, so upscaling to this is
+ * lossless and removes the pixelation seen when the preview size was exported
+ * directly. The whole exported PNG is a little larger than this once padding
+ * and the caption row are added.
+ */
+const QR_EXPORT_SIZE = 1024
+
+/**
+ * Deliver a rendered PNG to the user. On mobile browsers that support sharing
+ * files (iOS Safari, Android Chrome), open the native share sheet so the user
+ * can tap "Save Image" / "Save to Photos" — the closest a web app can get to
+ * saving straight to the camera roll, since browsers have no direct photo
+ * library write access. Everywhere else (and if the user cancels or sharing
+ * fails) fall back to a normal file download.
+ */
+async function deliverPng(blob: Blob, filename: string): Promise<void> {
+  const file = new File([blob], filename, { type: 'image/png' })
+
+  const nav = navigator as Navigator & {
+    canShare?: (data?: ShareData) => boolean
+  }
+  const canShareFile =
+    typeof nav.share === 'function' &&
+    typeof nav.canShare === 'function' &&
+    nav.canShare({ files: [file] })
+
+  if (canShareFile) {
+    try {
+      await nav.share({ files: [file], title: filename })
+      return
+    } catch (err) {
+      // AbortError = user dismissed the share sheet; don't then force a
+      // download behind their back. Any other failure falls through to the
+      // download so the user still gets their file.
+      if (err instanceof DOMException && err.name === 'AbortError') return
+    }
+  }
+
+  downloadBlob(blob, filename)
+}
+
+/** Trigger a classic browser file download of a blob. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 interface QRModalProps {
   profileId: string
   isOpen: boolean
@@ -88,20 +141,27 @@ export function QRModal({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Add padding around the QR code, plus extra room below it for the
-    // domain/slug caption drawn by drawLabel.
-    const padding = 32
-    const labelHeight = 24
+    // Target render size for the QR code itself, independent of the small
+    // on-screen preview (220px). The SVG is vector, so rasterizing it at a
+    // larger size is lossless — this is what fixes the pixelated download.
+    // Padding and the caption row scale off this so the layout stays in
+    // proportion no matter what QR_EXPORT_SIZE is.
+    const qrSize = QR_EXPORT_SIZE
+    const padding = Math.round(qrSize * 0.145)
+    const labelHeight = Math.round(qrSize * 0.11)
+    const fontSize = Math.round(qrSize * 0.059)
 
     const qrImg = new Image()
     qrImg.onload = () => {
-      canvas.width = qrImg.width + padding * 2
-      canvas.height = qrImg.height + padding * 2 + labelHeight
+      canvas.width = qrSize + padding * 2
+      canvas.height = qrSize + padding * 2 + labelHeight
 
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(qrImg, padding, padding)
-      drawLabel(ctx, padding, padding + qrImg.height)
+      // Draw the SVG scaled up to the full export size regardless of its
+      // intrinsic (preview) dimensions.
+      ctx.drawImage(qrImg, padding, padding, qrSize, qrSize)
+      drawLabel(ctx, padding, padding + qrSize)
 
       if (showPhoto && imageUrl) {
         // imageUrl is served same-origin (via the frontend's own CloudFront
@@ -109,7 +169,7 @@ export function QRModal({
         // needed here, unlike a genuinely cross-origin image would require.
         const photoImg = new Image()
         photoImg.onload = () => {
-          drawPhotoOnCanvas(ctx, photoImg, qrImg.width, qrImg.height)
+          drawPhotoOnCanvas(ctx, photoImg, qrSize, qrSize)
           exportCanvas(canvas)
         }
         photoImg.onerror = () => {
@@ -128,10 +188,10 @@ export function QRModal({
     // the QR's modules or finder patterns (see QRModal's slug prop doc).
     function drawLabel(context: CanvasRenderingContext2D, x: number, y: number) {
       context.fillStyle = '#6b7280'
-      context.font = '13px sans-serif'
+      context.font = `${fontSize}px sans-serif`
       context.textAlign = 'left'
       context.textBaseline = 'top'
-      context.fillText(qrLabel, x, y + 6)
+      context.fillText(qrLabel, x, y + Math.round(qrSize * 0.027))
     }
 
     function drawPhotoOnCanvas(
@@ -141,7 +201,7 @@ export function QRModal({
       qrHeight: number,
     ) {
       const photoSize = Math.round(qrWidth * 0.25)
-      const borderWidth = 5
+      const borderWidth = Math.round(qrWidth * 0.023)
       const centerX = padding + qrWidth / 2
       const centerY = padding + qrHeight / 2
 
@@ -169,12 +229,7 @@ export function QRModal({
     function exportCanvas(c: HTMLCanvasElement) {
       c.toBlob((blob) => {
         if (!blob) return
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = `badgetag-${profileId}.png`
-        link.click()
-        URL.revokeObjectURL(url)
+        void deliverPng(blob, `badgetag-${profileId}.png`)
       }, 'image/png')
     }
   }, [profileId, showPhoto, imageUrl, qrLabel])

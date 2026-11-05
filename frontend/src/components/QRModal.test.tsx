@@ -245,6 +245,126 @@ describe('QRModal', () => {
       vi.unstubAllGlobals()
     })
 
+    it('exports the QR code at high resolution (>= 1024px) regardless of preview size', async () => {
+      const user = userEvent.setup()
+
+      const mockSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      vi.spyOn(document, 'getElementById').mockReturnValue(mockSvg)
+
+      const mockToBlob = vi.fn()
+      const mockCtx = {
+        fillStyle: '',
+        font: '',
+        textAlign: '',
+        textBaseline: '',
+        fillRect: vi.fn(),
+        fillText: vi.fn(),
+        drawImage: vi.fn(),
+        beginPath: vi.fn(),
+        arc: vi.fn(),
+        fill: vi.fn(),
+        clip: vi.fn(),
+        save: vi.fn(),
+        restore: vi.fn(),
+      }
+
+      // Capture the canvas the component creates so we can read the
+      // dimensions it sets. Only intercept 'canvas'; delegate everything else
+      // to the real implementation.
+      const realCreateElement = document.createElement.bind(document)
+      let exportCanvas: HTMLCanvasElement | null = null
+      vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+        const el = realCreateElement(tag)
+        if (tag === 'canvas') {
+          exportCanvas = el as HTMLCanvasElement
+          exportCanvas.getContext = vi.fn().mockReturnValue(mockCtx) as unknown as typeof exportCanvas.getContext
+          exportCanvas.toBlob = mockToBlob as unknown as typeof exportCanvas.toBlob
+        }
+        return el
+      }) as typeof document.createElement)
+
+      // Preview-size (220px) intrinsic image dimensions — the export must NOT
+      // use these; it should upscale to the fixed export size.
+      const imageInstances: Array<{ onload: (() => void) | null; src: string; width: number; height: number }> = []
+      vi.stubGlobal('Image', class {
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        src = ''
+        width = 220
+        height = 220
+        constructor() {
+          imageInstances.push(this)
+        }
+      })
+
+      render(<QRModal {...defaultProps} />)
+      await user.click(screen.getByText('Download QR'))
+      imageInstances[0].onload?.()
+
+      // Canvas must be at least 1024px on its shorter (QR) axis.
+      expect(exportCanvas!.width).toBeGreaterThanOrEqual(1024)
+      expect(exportCanvas!.height).toBeGreaterThanOrEqual(1024)
+      // QR should be drawn at the large export size, not the 220px intrinsic.
+      const qrDrawCall = mockCtx.drawImage.mock.calls[0]
+      expect(qrDrawCall[3]).toBeGreaterThanOrEqual(1024) // width arg
+      expect(qrDrawCall[4]).toBeGreaterThanOrEqual(1024) // height arg
+
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    it('uses the Web Share API with a file when available (mobile save-to-photos path)', async () => {
+      const user = userEvent.setup()
+
+      const mockSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      vi.spyOn(document, 'getElementById').mockReturnValue(mockSvg)
+
+      const blob = new Blob(['x'], { type: 'image/png' })
+      const mockCtx = {
+        fillStyle: '', font: '', textAlign: '', textBaseline: '',
+        fillRect: vi.fn(), fillText: vi.fn(), drawImage: vi.fn(),
+        beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), clip: vi.fn(),
+        save: vi.fn(), restore: vi.fn(),
+      }
+      HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue(mockCtx) as unknown as typeof HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.toBlob = vi.fn((cb: BlobCallback) => cb(blob)) as unknown as typeof HTMLCanvasElement.prototype.toBlob
+
+      const shareMock = vi.fn().mockResolvedValue(undefined)
+      const canShareMock = vi.fn().mockReturnValue(true)
+      Object.defineProperty(navigator, 'share', { value: shareMock, writable: true, configurable: true })
+      Object.defineProperty(navigator, 'canShare', { value: canShareMock, writable: true, configurable: true })
+
+      // Capture the single Image so we can fire its onload.
+      const images: Array<{ onload: (() => void) | null }> = []
+      vi.stubGlobal('Image', class {
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        src = ''
+        width = 220
+        height = 220
+        constructor() { images.push(this) }
+      })
+
+      render(<QRModal {...defaultProps} />)
+      await user.click(screen.getByText('Download QR'))
+      images[0].onload?.()
+      // Allow the async deliverPng promise chain to settle.
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(canShareMock).toHaveBeenCalled()
+      expect(shareMock).toHaveBeenCalledWith(
+        expect.objectContaining({ files: expect.any(Array) }),
+      )
+
+      // @ts-expect-error cleanup
+      delete navigator.share
+      // @ts-expect-error cleanup
+      delete navigator.canShare
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
     it('download with photo overlay enabled draws both the QR code and the circular photo', async () => {
       const user = userEvent.setup()
 
