@@ -2,6 +2,7 @@
 import "source-map-support/register";
 import * as cdk from "aws-cdk-lib";
 import { ApiStack } from "../lib/api-stack";
+import { resolveAdminEmails } from "../lib/admin-emails";
 import { AuthStack } from "../lib/auth-stack";
 import { DataStack } from "../lib/data-stack";
 import { FrontendStack } from "../lib/frontend-stack";
@@ -98,6 +99,14 @@ const apiStack = new ApiStack(app, `BadgeTag-Api-${environment}`, {
     .map((origin) => origin.trim())
     .filter(Boolean),
   siteUrl,
+  // Admin allowlist for the read-only "all profiles" view, read from the
+  // committed config/admin-emails.json for this environment (a
+  // `--context adminEmails=…` override wins if present). Empty means
+  // nobody is an admin — fail closed.
+  adminEmails: resolveAdminEmails(
+    environment,
+    app.node.tryGetContext("adminEmails") as string | undefined,
+  ),
 });
 // DataStack's table/imageBucket and AuthStack's Cognito identifiers are
 // resolved via SSM Parameter Store (see dataStackParamPaths in

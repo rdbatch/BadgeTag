@@ -2,6 +2,7 @@ use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse
 use lambda_runtime::{Error, LambdaEvent, service_fn};
 use tracing::Instrument;
 
+use badgetag_backend::admin::AdminAllowlist;
 use badgetag_backend::auth::AuthConfig;
 use badgetag_backend::router::route;
 use badgetag_backend::store::ProfileStore;
@@ -9,6 +10,7 @@ use badgetag_backend::store::ProfileStore;
 struct AppState {
     store: ProfileStore,
     auth_config: AuthConfig,
+    admin_allowlist: AdminAllowlist,
     site_url: String,
 }
 
@@ -22,9 +24,15 @@ async fn handler(
     // Every log line for this request carries request_id, so a client-side
     // RUM session's x-request-id header can be joined against these logs.
     let span = tracing::info_span!("request", request_id = %request_id);
-    let mut response = route(&request, &state.store, &state.auth_config, &state.site_url)
-        .instrument(span)
-        .await;
+    let mut response = route(
+        &request,
+        &state.store,
+        &state.auth_config,
+        &state.admin_allowlist,
+        &state.site_url,
+    )
+    .instrument(span)
+    .await;
 
     // Same-origin (via CloudFront's /api/* behavior), so the browser can
     // read this without any CORS configuration.
@@ -58,6 +66,10 @@ async fn main() -> Result<(), Error> {
     // build absolute og:url/og:image values for the crawler-facing
     // /__og/profile/{id} route; see router::route.
     let site_url = std::env::var("SITE_URL").unwrap_or_default();
+    // Comma-separated list of emails allowed to use the admin-only
+    // endpoints. Unset/empty means nobody is an admin (fail closed).
+    let admin_allowlist =
+        AdminAllowlist::from_csv(&std::env::var("ADMIN_EMAILS").unwrap_or_default());
 
     let store = ProfileStore::new(
         dynamo_client,
@@ -74,6 +86,7 @@ async fn main() -> Result<(), Error> {
     let state = AppState {
         store,
         auth_config,
+        admin_allowlist,
         site_url,
     };
 

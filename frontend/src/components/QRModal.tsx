@@ -2,6 +2,65 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import QRCode from 'react-qr-code'
 import { useOverlayClose } from '../hooks/useOverlayClose'
 
+/**
+ * Pixel size the QR code is rasterized to when exported, independent of the
+ * small on-screen preview. The code is a vector SVG, so upscaling to this is
+ * lossless and removes the pixelation seen when the preview size was exported
+ * directly. The whole exported PNG is a little larger than this once padding
+ * and the caption row are added.
+ */
+const QR_EXPORT_SIZE = 1024
+
+/**
+ * Whether this browser can share a PNG file via the native share sheet — true
+ * on mobile browsers that implement the Web Share API with file support (iOS
+ * Safari, Android Chrome), false on desktop. Drives whether the "Share" button
+ * is rendered at all. Probed with a tiny dummy PNG file so `canShare` sees the
+ * same shape the real share call uses.
+ */
+function canSharePng(): boolean {
+  const nav = navigator as Navigator & {
+    canShare?: (data?: ShareData) => boolean
+  }
+  if (typeof nav.share !== 'function' || typeof nav.canShare !== 'function') {
+    return false
+  }
+  try {
+    const probe = new File([''], 'probe.png', { type: 'image/png' })
+    return nav.canShare({ files: [probe] })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Open the native share sheet with the rendered PNG so the user can tap "Save
+ * Image" / "Save to Photos" — the closest a web app can get to saving straight
+ * to the camera roll, since browsers have no direct photo library write
+ * access. A dismissed sheet (AbortError) is a no-op; only call this when
+ * canSharePng() is true.
+ */
+async function sharePng(blob: Blob, filename: string): Promise<void> {
+  const file = new File([blob], filename, { type: 'image/png' })
+  try {
+    await navigator.share({ files: [file], title: filename })
+  } catch (err) {
+    // AbortError = user dismissed the sheet; anything else we swallow too,
+    // since the download button is the always-available path.
+    if (err instanceof DOMException && err.name === 'AbortError') return
+  }
+}
+
+/** Trigger a classic browser file download of a blob. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 interface QRModalProps {
   profileId: string
   isOpen: boolean
@@ -79,7 +138,11 @@ export function QRModal({
     }
   }, [isOpen, onClose])
 
-  const handleDownload = useCallback(() => {
+  // Renders the QR code (plus caption and optional photo) to a high-res PNG
+  // blob off-screen, then hands it to `deliver` — either the file download or
+  // the share sheet. Both action buttons share this one render pipeline so the
+  // exported image is identical whichever path the user takes.
+  const renderQrPng = useCallback((deliver: (blob: Blob) => void) => {
     const svg = document.getElementById('qr-code-svg')
     if (!svg) return
 
@@ -88,20 +151,27 @@ export function QRModal({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Add padding around the QR code, plus extra room below it for the
-    // domain/slug caption drawn by drawLabel.
-    const padding = 32
-    const labelHeight = 24
+    // Target render size for the QR code itself, independent of the small
+    // on-screen preview (220px). The SVG is vector, so rasterizing it at a
+    // larger size is lossless — this is what fixes the pixelated download.
+    // Padding and the caption row scale off this so the layout stays in
+    // proportion no matter what QR_EXPORT_SIZE is.
+    const qrSize = QR_EXPORT_SIZE
+    const padding = Math.round(qrSize * 0.145)
+    const labelHeight = Math.round(qrSize * 0.11)
+    const fontSize = Math.round(qrSize * 0.059)
 
     const qrImg = new Image()
     qrImg.onload = () => {
-      canvas.width = qrImg.width + padding * 2
-      canvas.height = qrImg.height + padding * 2 + labelHeight
+      canvas.width = qrSize + padding * 2
+      canvas.height = qrSize + padding * 2 + labelHeight
 
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(qrImg, padding, padding)
-      drawLabel(ctx, padding, padding + qrImg.height)
+      // Draw the SVG scaled up to the full export size regardless of its
+      // intrinsic (preview) dimensions.
+      ctx.drawImage(qrImg, padding, padding, qrSize, qrSize)
+      drawLabel(ctx, padding, padding + qrSize)
 
       if (showPhoto && imageUrl) {
         // imageUrl is served same-origin (via the frontend's own CloudFront
@@ -109,7 +179,7 @@ export function QRModal({
         // needed here, unlike a genuinely cross-origin image would require.
         const photoImg = new Image()
         photoImg.onload = () => {
-          drawPhotoOnCanvas(ctx, photoImg, qrImg.width, qrImg.height)
+          drawPhotoOnCanvas(ctx, photoImg, qrSize, qrSize)
           exportCanvas(canvas)
         }
         photoImg.onerror = () => {
@@ -128,10 +198,10 @@ export function QRModal({
     // the QR's modules or finder patterns (see QRModal's slug prop doc).
     function drawLabel(context: CanvasRenderingContext2D, x: number, y: number) {
       context.fillStyle = '#6b7280'
-      context.font = '13px sans-serif'
+      context.font = `${fontSize}px sans-serif`
       context.textAlign = 'left'
       context.textBaseline = 'top'
-      context.fillText(qrLabel, x, y + 6)
+      context.fillText(qrLabel, x, y + Math.round(qrSize * 0.027))
     }
 
     function drawPhotoOnCanvas(
@@ -141,7 +211,7 @@ export function QRModal({
       qrHeight: number,
     ) {
       const photoSize = Math.round(qrWidth * 0.25)
-      const borderWidth = 5
+      const borderWidth = Math.round(qrWidth * 0.023)
       const centerX = padding + qrWidth / 2
       const centerY = padding + qrHeight / 2
 
@@ -169,15 +239,26 @@ export function QRModal({
     function exportCanvas(c: HTMLCanvasElement) {
       c.toBlob((blob) => {
         if (!blob) return
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = `badgetag-${profileId}.png`
-        link.click()
-        URL.revokeObjectURL(url)
+        deliver(blob)
       }, 'image/png')
     }
-  }, [profileId, showPhoto, imageUrl, qrLabel])
+  }, [showPhoto, imageUrl, qrLabel])
+
+  const filename = `badgetag-${profileId}.png`
+
+  const handleDownload = useCallback(() => {
+    renderQrPng((blob) => downloadBlob(blob, filename))
+  }, [renderQrPng, filename])
+
+  const handleShare = useCallback(() => {
+    renderQrPng((blob) => {
+      void sharePng(blob, filename)
+    })
+  }, [renderQrPng, filename])
+
+  // Whether the native share sheet is available. Computed once when the modal
+  // opens; it never changes within a session, so there's no need to re-probe.
+  const [canShare] = useState(canSharePng)
 
   const overlayClose = useOverlayClose(onClose)
 
@@ -273,8 +354,18 @@ export function QRModal({
             onClick={handleDownload}
             className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
           >
-            Download QR
+            Download
           </button>
+          {/* Share only appears on mobile browsers that can share a file —
+              it opens the native share sheet where "Save to Photos" lives. */}
+          {canShare && (
+            <button
+              onClick={handleShare}
+              className="flex-1 rounded-lg border border-blue-600 px-4 py-2.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-50"
+            >
+              Share
+            </button>
+          )}
           <button
             onClick={() => {
               navigator.clipboard.writeText(profileUrl)

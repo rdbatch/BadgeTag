@@ -3,11 +3,13 @@ use aws_lambda_events::encodings::Body;
 use aws_lambda_events::http::HeaderMap;
 use base64::Engine;
 
+use crate::admin::AdminAllowlist;
 use crate::auth::{AuthConfig, authorize_profile_access, validate_token};
 use crate::error::AppError;
 use crate::models::{
     ConnectionCreateRequest, ConnectionUpdateRequest, ImageUploadRequest, ImageUploadResponse,
-    ProfileDeleteRequest, ProfileUpdateRequest, SlugUpdateRequest, validate_slug,
+    OwnProfileResponse, ProfileDeleteRequest, ProfileUpdateRequest, SlugUpdateRequest,
+    validate_slug,
 };
 use crate::og::render_og_html;
 use crate::store::ProfileStore;
@@ -21,6 +23,7 @@ pub async fn route(
     event: &ApiGatewayV2httpRequest,
     store: &ProfileStore,
     auth_config: &AuthConfig,
+    admin_allowlist: &AdminAllowlist,
     site_url: &str,
 ) -> ApiGatewayV2httpResponse {
     let start = std::time::Instant::now();
@@ -35,7 +38,12 @@ pub async fn route(
     tracing::info!(method, path, "Routing request");
 
     let result = match (method, path) {
-        ("GET", "/api/profile/me") => handle_get_own_profile(event, store, auth_config).await,
+        ("GET", "/api/profile/me") => {
+            handle_get_own_profile(event, store, auth_config, admin_allowlist).await
+        }
+        ("GET", "/api/profile/admin/users") => {
+            handle_list_all_profiles(event, store, auth_config, admin_allowlist).await
+        }
         ("GET", p) if p.starts_with("/api/profile/") => {
             let id = p.strip_prefix("/api/profile/").unwrap_or_default();
             handle_get_profile(id, store).await
@@ -162,10 +170,40 @@ async fn handle_get_own_profile(
     event: &ApiGatewayV2httpRequest,
     store: &ProfileStore,
     auth_config: &AuthConfig,
+    admin_allowlist: &AdminAllowlist,
 ) -> Result<ApiGatewayV2httpResponse, AppError> {
     let token_email = validate_token(event, auth_config).await?;
     let profile = store.get_profile_by_email(&token_email).await?;
-    json_response(200, &profile)
+    // The admin decision is made here, against the verified token email, so
+    // the frontend never holds the allowlist — it only reads this flag to
+    // decide whether to reveal the admin menu item and /admin route.
+    let is_admin = admin_allowlist.is_admin(&token_email);
+    json_response(200, &OwnProfileResponse { profile, is_admin })
+}
+
+/// GET /api/profile/admin/users — authenticated AND admin-only. Returns a
+/// compact summary of every profile for the read-only admin view. Rejected
+/// with 403 for any authenticated caller not on the `ADMIN_EMAILS`
+/// allowlist, so hiding the page in the UI is never the only control — the
+/// data itself is gated server-side against the verified token email.
+async fn handle_list_all_profiles(
+    event: &ApiGatewayV2httpRequest,
+    store: &ProfileStore,
+    auth_config: &AuthConfig,
+    admin_allowlist: &AdminAllowlist,
+) -> Result<ApiGatewayV2httpResponse, AppError> {
+    let token_email = validate_token(event, auth_config).await?;
+
+    if !admin_allowlist.is_admin(&token_email) {
+        tracing::warn!(
+            token_email,
+            "Non-admin user attempted to access the admin profile list"
+        );
+        return Err(AppError::Forbidden);
+    }
+
+    let users = store.list_all_profiles().await?;
+    json_response(200, &users)
 }
 
 /// PUT /api/profile — authenticated, user can only modify their own profile
@@ -454,6 +492,10 @@ mod tests {
         )
     }
 
+    fn test_admin_allowlist() -> AdminAllowlist {
+        AdminAllowlist::from_csv("admin@example.com")
+    }
+
     #[test]
     fn route_path_extraction() {
         let path = "/api/profile/abc123def456";
@@ -483,7 +525,7 @@ mod tests {
         };
         let store = test_store();
         let auth_config = test_auth_config();
-        let response = route(&event, &store, &auth_config, "").await;
+        let response = route(&event, &store, &auth_config, &test_admin_allowlist(), "").await;
         // No Authorization header — must be rejected before ever reaching
         // the store, and must not fall through to the public /{id} handler.
         assert_eq!(response.status_code, 401);
@@ -517,7 +559,7 @@ mod tests {
                 },
                 ..Default::default()
             };
-            let response = route(&event, &store, &auth_config, "").await;
+            let response = route(&event, &store, &auth_config, &test_admin_allowlist(), "").await;
             assert_eq!(
                 response.status_code, 401,
                 "expected 401 for unauthenticated {path}"
@@ -540,7 +582,29 @@ mod tests {
         };
         let store = test_store();
         let auth_config = test_auth_config();
-        let response = route(&event, &store, &auth_config, "").await;
+        let response = route(&event, &store, &auth_config, &test_admin_allowlist(), "").await;
+        assert_eq!(response.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn admin_users_route_requires_auth() {
+        // No Authorization header — the admin list must be rejected at the
+        // auth gate (401) before the allowlist check, and must never fall
+        // through to the public /api/profile/{id} handler.
+        let event = ApiGatewayV2httpRequest {
+            raw_path: Some("/api/profile/admin/users".to_string()),
+            request_context: aws_lambda_events::apigw::ApiGatewayV2httpRequestContext {
+                http: aws_lambda_events::apigw::ApiGatewayV2httpRequestContextHttpDescription {
+                    method: aws_lambda_events::http::Method::GET,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let store = test_store();
+        let auth_config = test_auth_config();
+        let response = route(&event, &store, &auth_config, &test_admin_allowlist(), "").await;
         assert_eq!(response.status_code, 401);
     }
 

@@ -5,7 +5,7 @@ use aws_sdk_s3::Client as S3Client;
 
 use crate::error::AppError;
 use crate::models::{
-    Connection, ConnectionCreateRequest, ConnectionUpdateRequest, CustomTheme, Profile,
+    AdminUser, Connection, ConnectionCreateRequest, ConnectionUpdateRequest, CustomTheme, Profile,
     ProfileUpdateRequest, SocialLink, SocialPlatform, ThemeId, validate_slug,
 };
 use crate::og_image;
@@ -1035,6 +1035,80 @@ impl ProfileStore {
         }
 
         Ok(profile_ids)
+    }
+
+    /// Lists a compact summary of every profile in the table, for the
+    /// admin-only "all profiles" view. Scans the whole table filtering to
+    /// the `PROFILE` item of each profile (the same unindexed scan pattern
+    /// `list_all_profile_ids` uses, fine at this app's scale and only ever
+    /// reached by an allowlisted admin), then projects each item down to
+    /// the handful of fields the admin table and its QR/3MF generators
+    /// need.
+    ///
+    /// Emails here are the full stored values regardless of
+    /// `display_email` — this is a server-authorized admin view, so the
+    /// row is built directly rather than through `to_public()`.
+    pub async fn list_all_profiles(&self) -> Result<Vec<AdminUser>, AppError> {
+        let mut users = Vec::new();
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut request = self
+                .dynamo
+                .scan()
+                .table_name(&self.table_name)
+                .filter_expression("sk = :sk")
+                .expression_attribute_values(":sk", AttributeValue::S(PROFILE_SK.to_string()));
+
+            if let Some(key) = exclusive_start_key {
+                request = request.set_exclusive_start_key(Some(key));
+            }
+
+            let result = request
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(format!("DynamoDB scan failed: {e}")))?;
+
+            for item in result.items() {
+                let Some(pk) = get_string(item, "pk") else {
+                    continue;
+                };
+                let Some(profile_id) = pk.strip_prefix("PROFILE#") else {
+                    continue;
+                };
+
+                let image_url = get_string(item, "image_key")
+                    .map(|key| format!("{}/{}", self.image_base_url, key));
+                let view_count = item
+                    .get("view_count")
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse::<i64>().ok());
+
+                users.push(AdminUser {
+                    id: profile_id.to_string(),
+                    email: get_string(item, "email"),
+                    slug: get_string(item, "slug"),
+                    display_name: get_string(item, "display_name"),
+                    pronouns: get_string(item, "pronouns"),
+                    image_url,
+                    view_count,
+                    created_at: get_string(item, "created_at")
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+
+            exclusive_start_key = result.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        // Newest first — a reasonable default ordering for an admin
+        // scanning recent sign-ups. created_at is an ISO-8601 string, so a
+        // plain descending lexical sort is chronological.
+        users.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok(users)
     }
 
     /// Regenerates a single profile's composite OG share image — used by

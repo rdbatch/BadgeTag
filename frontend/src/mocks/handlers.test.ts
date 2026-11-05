@@ -283,6 +283,21 @@ describe('profile API handlers', () => {
     expect(me.slug).toBe('ada-lovelace')
   })
 
+  it('serves a seeded extra profile as a public card by id', async () => {
+    const res = await handleMockRequest(request('/api/profile/demograce01'))
+    expect(res?.status).toBe(200)
+    const profile = await res?.json()
+    expect(profile.display_name).toBe('Grace Hopper')
+    expect(profile.links.length).toBeGreaterThan(0)
+  })
+
+  it('serves a seeded extra profile as a public card by @slug', async () => {
+    const res = await handleMockRequest(request('/api/profile/@linus'))
+    expect(res?.status).toBe(200)
+    const profile = await res?.json()
+    expect(profile.display_name).toBe('Linus Torvalds')
+  })
+
   it('serves the public card by id without auth and 404s unknown ids', async () => {
     const me = await (
       await handleMockRequest(request('/api/profile/me', { headers: AUTH_HEADER }))
@@ -350,6 +365,76 @@ describe('profile API handlers', () => {
 
   it('persists the store in localStorage', () => {
     expect(localStorage.getItem(MOCK_STORE_KEY)).toContain('Ada Lovelace')
+  })
+
+  it('marks the seeded sample user (Ada) as admin on /me', async () => {
+    const res = await handleMockRequest(
+      request('/api/profile/me', { headers: AUTH_HEADER }),
+    )
+    const profile = await res?.json()
+    expect(profile.is_admin).toBe(true)
+  })
+
+  it('marks a non-Ada signed-in user as non-admin on /me', async () => {
+    await handleMockRequest(
+      request('/api/profile', {
+        method: 'PUT',
+        headers: AUTH_HEADER,
+        body: JSON.stringify({
+          email: 'someone@else.com',
+          theme: 'light',
+          display_email: true,
+          links: [],
+        }),
+      }),
+    )
+    const res = await handleMockRequest(
+      request('/api/profile/me', { headers: AUTH_HEADER }),
+    )
+    const profile = await res?.json()
+    expect(profile.is_admin).toBe(false)
+  })
+
+  it('serves the admin profile list to Ada, including seeded extras', async () => {
+    const res = await handleMockRequest(
+      request('/api/profile/admin/users', { headers: AUTH_HEADER }),
+    )
+    expect(res?.status).toBe(200)
+    const users = await res?.json()
+    // Ada (the signed-in profile) plus the seeded read-only extras.
+    expect(users.length).toBeGreaterThanOrEqual(4)
+    const names = users.map((u: { display_name?: string }) => u.display_name)
+    expect(names).toContain('Ada Lovelace')
+    expect(names).toContain('Grace Hopper')
+    // Every row carries the fields the QR/3MF generators need.
+    const grace = users.find((u: { display_name?: string }) => u.display_name === 'Grace Hopper')
+    expect(grace.id).toBeTruthy()
+    expect(grace.slug).toBe('grace')
+    expect(grace.pronouns).toBe('she/her')
+  })
+
+  it('rejects the admin list for a non-Ada signed-in user with 403', async () => {
+    await handleMockRequest(
+      request('/api/profile', {
+        method: 'PUT',
+        headers: AUTH_HEADER,
+        body: JSON.stringify({
+          email: 'someone@else.com',
+          theme: 'light',
+          display_email: true,
+          links: [],
+        }),
+      }),
+    )
+    const res = await handleMockRequest(
+      request('/api/profile/admin/users', { headers: AUTH_HEADER }),
+    )
+    expect(res?.status).toBe(403)
+  })
+
+  it('rejects the admin list without the mock token', async () => {
+    const res = await handleMockRequest(request('/api/profile/admin/users'))
+    expect(res?.status).toBe(401)
   })
 
   it('passes through requests the mocks do not own', async () => {

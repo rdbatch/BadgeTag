@@ -158,6 +158,12 @@ describe("ApiStack", () => {
       });
     });
 
+    test("has GET /api/profile/admin/users route (admin-only, enforced in the Lambda)", () => {
+      template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+        RouteKey: "GET /api/profile/admin/users",
+      });
+    });
+
     test("has PUT /api/profile route", () => {
       template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
         RouteKey: "PUT /api/profile",
@@ -321,6 +327,51 @@ describe("ApiStack", () => {
 
     test("list step runs before the map over all profiles", () => {
       definitionStringContains('"StartAt":"ListProfiles"', '"Next":"RegenerateAll"');
+    });
+  });
+
+  describe("adminEmails prop", () => {
+    test("defaults ADMIN_EMAILS to empty (nobody is an admin) when adminEmails is not set", () => {
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        FunctionName: "badgetag-api-test",
+        Environment: {
+          Variables: Match.objectLike({
+            ADMIN_EMAILS: "",
+          }),
+        },
+      });
+    });
+
+    test("joins adminEmails into a comma-separated ADMIN_EMAILS when provided", () => {
+      const app = new cdk.App({ context: { environment: "test" } });
+      const env = { account: "123456789012", region: "us-east-1" };
+
+      new DataStack(app, "AdminDataStack", {
+        tags: { project: "badgetag", environment: "test" },
+        env,
+      });
+      new AuthStack(app, "AdminAuthStack", {
+        tags: { project: "badgetag", environment: "test" },
+        sesDomainName: "test.badgetag.me",
+        passkeyRelyingPartyId: "test.badgetag.me",
+        alertEmail: "ops@example.com",
+        env,
+      });
+      const apiStack = new ApiStack(app, "AdminApiStack", {
+        tags: { project: "badgetag", environment: "test" },
+        env,
+        environment: "test",
+        adminEmails: ["ryan@rdbatch.dev", "second@example.com"],
+      });
+
+      Template.fromStack(apiStack).hasResourceProperties("AWS::Lambda::Function", {
+        FunctionName: "badgetag-api-test",
+        Environment: {
+          Variables: Match.objectLike({
+            ADMIN_EMAILS: "ryan@rdbatch.dev,second@example.com",
+          }),
+        },
+      });
     });
   });
 
