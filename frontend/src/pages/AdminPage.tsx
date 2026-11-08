@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { useAuth } from '../auth'
 import { HeaderMenu } from '../components/HeaderMenu'
 import { QRModal } from '../components/QRModal'
+import { QRLabelModal } from '../components/QRLabelModal'
 import { Print3DModal } from '../components/Print3DModal'
 import { useAdminUsers } from '../hooks/useAdminUsers'
 import { useIsAdmin } from '../hooks/useIsAdmin'
@@ -16,10 +17,12 @@ import type { AdminUser } from '../types/profile'
  * is independently protected server-side (403 for non-admins), so this
  * guard is UX, not the security boundary.
  *
- * Each row can open the target profile's public card, QR code, or 3MF
- * generator — the QR and 3MF modals are the exact same components the
- * owner's edit page uses, driven here by the listed user's fields, so any
- * future change to those generators shows up here automatically.
+ * Each row can open the target profile's public card, QR code, 3MF
+ * generator, or a printable QR label. The QR and 3MF modals are the exact
+ * same components the owner's edit page uses, driven here by the listed
+ * user's fields, so any future change to those generators shows up here
+ * automatically. The QR Label is admin-only — a black-on-white image for a
+ * thermal label printer, never exposed on the owner's edit page.
  *
  * Mobile-first: the layout is a stacked list of cards (not a wide table)
  * with wrapping action buttons, since the intended use is on a phone at a
@@ -39,6 +42,7 @@ export function AdminPage() {
 
   const [query, setQuery] = useState('')
   const [qrUser, setQrUser] = useState<AdminUser | null>(null)
+  const [labelUser, setLabelUser] = useState<AdminUser | null>(null)
   const [printUser, setPrintUser] = useState<AdminUser | null>(null)
 
   // Redirect anyone who isn't signed in, or who is confirmed non-admin,
@@ -206,6 +210,13 @@ export function AdminPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setLabelUser(u)}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                      >
+                        QR Label
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setPrintUser(u)}
                         className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
                       >
@@ -229,6 +240,16 @@ export function AdminPage() {
           onClose={() => setQrUser(null)}
           imageUrl={qrUser.imageUrl}
           slug={qrUser.slug}
+        />
+      )}
+      {labelUser && (
+        <QRLabelModal
+          profileId={labelUser.id}
+          isOpen={true}
+          onClose={() => setLabelUser(null)}
+          displayName={labelUser.displayName}
+          pronouns={labelUser.pronouns}
+          slug={labelUser.slug}
         />
       )}
       {printUser && (
