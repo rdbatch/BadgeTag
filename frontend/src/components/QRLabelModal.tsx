@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOverlayClose } from '../hooks/useOverlayClose'
+import { TextAlignPicker } from './TextAlignPicker'
+import type { TextAlign } from '../lib/qr3mf'
 import {
   buildQrLabelLines,
   drawQrLabel,
@@ -81,6 +83,8 @@ export function QRLabelModal({
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
 
+  const [align, setAlign] = useState<TextAlign>('center')
+
   const profileUrl = `${window.location.origin}/p/${profileId}`
   const trimmedSlug = slug?.trim() ?? ''
   const urlLabel = trimmedSlug
@@ -88,8 +92,8 @@ export function QRLabelModal({
     : profileUrl.replace(/^https?:\/\//, '')
 
   const input: QrLabelInput = useMemo(
-    () => ({ profileUrl, urlLabel, displayName, pronouns }),
-    [profileUrl, urlLabel, displayName, pronouns],
+    () => ({ profileUrl, urlLabel, displayName, pronouns, align }),
+    [profileUrl, urlLabel, displayName, pronouns, align],
   )
 
   const lines = useMemo(() => buildQrLabelLines(input), [input])
@@ -193,6 +197,12 @@ export function QRLabelModal({
           thermal label, printed portrait. Save it to your camera roll, then print from
           your label printer app.
         </p>
+
+        {/* Text alignment */}
+        <div className="mb-4 flex items-center justify-between">
+          <span className="text-sm font-medium text-gray-700">Text alignment</span>
+          <TextAlignPicker value={align} onChange={setAlign} />
+        </div>
 
         {/* Preview — the canvas is full print resolution, scaled down by CSS
             so it matches the exported PNG exactly. */}

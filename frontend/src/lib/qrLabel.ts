@@ -47,6 +47,9 @@ const QUIET_ZONE_MODULES = 2
 /** Vertical gap between the QR code and the first text line, in millimeters. */
 const QR_TEXT_GAP_MM = 3
 
+/** Horizontal alignment of the text lines below the QR code. */
+export type QrLabelAlign = 'left' | 'center' | 'right'
+
 /** One line of text below the QR code. */
 export interface QrLabelLine {
   text: string
@@ -63,6 +66,8 @@ export interface QrLabelInput {
   displayName?: string
   /** Optional pronouns. Omitted from the label when empty. */
   pronouns?: string
+  /** Horizontal alignment of the text lines. Defaults to center. */
+  align?: QrLabelAlign
 }
 
 /**
@@ -151,10 +156,16 @@ export function drawQrLabel(ctx: CanvasRenderingContext2D, input: QrLabelInput):
     }
   }
 
-  // Text lines, centered, stacked below the QR with a gap. Each line is drawn
-  // at a font size that fills its em but is shrunk to fit the content width.
+  // Text lines stacked below the QR with a gap. Each line is drawn at a font
+  // size that fills its em but is shrunk to fit the content width. Alignment
+  // is relative to the content box (inside the margins), so left/right hug the
+  // same edges the QR square sits within.
+  const align = input.align ?? 'center'
+  const left = margin
+  const right = width - margin
+  const anchorX = align === 'left' ? left : align === 'right' ? right : centerX
   ctx.fillStyle = '#000000'
-  ctx.textAlign = 'center'
+  ctx.textAlign = align === 'center' ? 'center' : align
   ctx.textBaseline = 'middle'
   let cursorY = qrY + qrSide + gapPx
   for (const line of lines) {
@@ -162,7 +173,7 @@ export function drawQrLabel(ctx: CanvasRenderingContext2D, input: QrLabelInput):
     const emPx = TEXT_EM_MM[line.size] * pxPerMm
     const fontPx = fitFontSize(ctx, line.text, emPx, contentWidth)
     ctx.font = `bold ${fontPx}px sans-serif`
-    ctx.fillText(line.text, centerX, cursorY + bandPx / 2)
+    ctx.fillText(line.text, anchorX, cursorY + bandPx / 2)
     cursorY += bandPx
   }
 }

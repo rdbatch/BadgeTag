@@ -55,6 +55,19 @@ describe('buildQrLabelLines', () => {
     })
     expect(lines.map((l) => l.text)).toEqual(['badgetag.me/p/abc123', 'they/them'])
   })
+
+  it('gives name and pronouns the same (large) size', () => {
+    const lines = buildQrLabelLines({
+      profileUrl: TEST_URL,
+      displayName: 'Grace Hopper',
+      pronouns: 'she/her',
+    })
+    const name = lines.find((l) => l.text === 'Grace Hopper')
+    const pronouns = lines.find((l) => l.text === 'she/her')
+    expect(name?.size).toBe('large')
+    expect(pronouns?.size).toBe('large')
+    expect(name?.size).toBe(pronouns?.size)
+  })
 })
 
 describe('label dimensions', () => {
@@ -125,6 +138,36 @@ describe('drawQrLabel', () => {
     drawQrLabel(ctx, { profileUrl: TEST_URL, urlLabel: 'badgetag.me/p/abc123' })
     const drawn = fillText.mock.calls.map(([text]) => text)
     expect(drawn).toEqual(['badgetag.me/p/abc123'])
+  })
+
+  it('centers text by default, anchored on the label midpoint', () => {
+    const { ctx, fillText } = mockContext()
+    drawQrLabel(ctx, input)
+    expect(ctx.textAlign).toBe('center')
+    for (const [, x] of fillText.mock.calls) {
+      expect(x).toBe(LABEL_PX.width / 2)
+    }
+  })
+
+  it('left-aligns text against the inner margin', () => {
+    const { ctx, fillText } = mockContext()
+    drawQrLabel(ctx, { ...input, align: 'left' })
+    expect(ctx.textAlign).toBe('left')
+    const xs = fillText.mock.calls.map(([, x]) => x)
+    // All lines share one left anchor, strictly inside the label.
+    expect(new Set(xs).size).toBe(1)
+    expect(xs[0]).toBeGreaterThan(0)
+    expect(xs[0]).toBeLessThan(LABEL_PX.width / 2)
+  })
+
+  it('right-aligns text against the inner margin', () => {
+    const { ctx, fillText } = mockContext()
+    drawQrLabel(ctx, { ...input, align: 'right' })
+    expect(ctx.textAlign).toBe('right')
+    const xs = fillText.mock.calls.map(([, x]) => x)
+    expect(new Set(xs).size).toBe(1)
+    expect(xs[0]).toBeGreaterThan(LABEL_PX.width / 2)
+    expect(xs[0]).toBeLessThan(LABEL_PX.width)
   })
 
   it('uses only black and white fill colors (thermal-printer safe)', () => {

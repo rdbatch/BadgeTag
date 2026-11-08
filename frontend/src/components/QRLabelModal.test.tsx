@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QRLabelModal } from './QRLabelModal'
@@ -61,6 +61,25 @@ describe('QRLabelModal', () => {
       render(<QRLabelModal {...defaultProps} />)
       const preview = screen.getByTestId('qr-label-preview')
       expect(preview).toHaveAccessibleName(/@grace.*Grace Hopper.*she\/her/i)
+    })
+  })
+
+  describe('text alignment', () => {
+    it('renders the alignment control, centered by default', () => {
+      render(<QRLabelModal {...defaultProps} />)
+      const group = screen.getByRole('radiogroup', { name: 'Text alignment' })
+      expect(group).toBeInTheDocument()
+      expect(within(group).getByRole('radio', { name: 'Align center' })).toBeChecked()
+    })
+
+    it('redraws the label when the alignment changes', () => {
+      render(<QRLabelModal {...defaultProps} />)
+      drawQrLabel.mockClear()
+      fireEvent.click(screen.getByRole('radio', { name: 'Align left' }))
+
+      expect(drawQrLabel).toHaveBeenCalled()
+      const lastInput = drawQrLabel.mock.calls.at(-1)?.[1] as { align?: string }
+      expect(lastInput.align).toBe('left')
     })
   })
 
