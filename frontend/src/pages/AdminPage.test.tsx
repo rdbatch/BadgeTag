@@ -6,6 +6,13 @@ import { AdminPage } from './AdminPage'
 import { __resetAdminUsersCacheForTests } from '../hooks/useAdminUsers'
 import { __resetIsAdminCacheForTests } from '../hooks/useIsAdmin'
 
+// The QR Label modal draws to a canvas on open; jsdom has no canvas backend,
+// so stub the drawing (the lib itself is covered in qrLabel.test.ts).
+vi.mock('../lib/qrLabel', async () => {
+  const actual = await vi.importActual<typeof import('../lib/qrLabel')>('../lib/qrLabel')
+  return { ...actual, drawQrLabel: vi.fn(), renderQrLabel: vi.fn() }
+})
+
 const SESSION_KEY = 'badgetag-auth-session'
 
 function seedSession() {
@@ -125,8 +132,9 @@ describe('AdminPage', () => {
     })
     expect(screen.getByText('Alan Turing')).toBeInTheDocument()
     expect(screen.getByText('grace@example.com')).toBeInTheDocument()
-    // Each row carries Profile / QR Code / 3MF controls.
+    // Each row carries Profile / QR Code / QR Label / 3MF controls.
     expect(screen.getAllByRole('button', { name: 'QR Code' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'QR Label' })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: '3MF' })).toHaveLength(2)
     expect(screen.getAllByRole('link', { name: 'Profile' })).toHaveLength(2)
   })
@@ -187,6 +195,23 @@ describe('AdminPage', () => {
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     expect(screen.getByText('Your QR Code')).toBeInTheDocument()
+  })
+
+  it('opens the QR label modal for a row', async () => {
+    seedSession()
+    globalThis.fetch = mockFetch({ isAdmin: true })
+
+    renderAdminPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Grace Hopper')).toBeInTheDocument()
+    })
+
+    const graceRow = screen.getByText('Grace Hopper').closest('li')!
+    fireEvent.click(within(graceRow).getByRole('button', { name: 'QR Label' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'QR Label' })).toBeInTheDocument()
   })
 
   it('re-runs the scan when Refresh is clicked', async () => {
